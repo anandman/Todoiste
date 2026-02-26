@@ -1,0 +1,17 @@
+## Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+build/
+DerivedData/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+## macOS
+.DS_Store

@@ -1,0 +1,44 @@
+name: Check for upstream updates
+
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Every Monday at 9am UTC
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  check-updates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch latest upstream scripts
+        run: ./scripts/update-shortcuts.sh
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet Todoiste/Resources/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No upstream changes detected."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream changes detected:"
+            git diff --stat Todoiste/Resources/
+          fi
+
+      - name: Create pull request
+        # Disabled until mgsloan/todoist-shortcuts#290 (PointerEvent fix) merges upstream.
+        # update-shortcuts.sh pulls from upstream, so an automated PR right now would
+        # revert the fix. Re-enable by removing the "if: false" line once the PR is merged.
+        if: false
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "Update vendored todoist-shortcuts scripts"
+          title: "Update todoist-shortcuts to latest upstream"
+          body: |
+            Automated PR: new changes detected in [mgsloan/todoist-shortcuts](https://github.com/mgsloan/todoist-shortcuts).
+
+            Review the diff carefully — upstream changes to DOM selectors or option names
+            may require updates to `bootstrap.js`.
+          branch: update-todoist-shortcuts
+          delete-branch: true
