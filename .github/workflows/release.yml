@@ -1,0 +1,42 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on version tags like v1.0.0
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Build App
+        run: |
+          xcodebuild -scheme Todoiste 
+            -configuration Release 
+            -derivedDataPath ./build 
+            CODE_SIGNING_ALLOWED=NO 
+            build
+
+      - name: Package App
+        run: |
+          cd ./build/Build/Products/Release
+          ditto -c -k --sequesterRsrc --keepParent Todoiste.app Todoiste.zip
+
+      # NOTE: Signing and Notarization steps will go here once the Apple Developer account is ready.
+      # These require certificates stored in GitHub Secrets.
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ./build/Build/Products/Release/Todoiste.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
