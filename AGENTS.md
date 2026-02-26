@@ -94,19 +94,15 @@ Scripts execute in order: mousetrap → options → bootstrap → todoist-shortc
 
 ## Upstream Fork
 
-> **Temporary — delete this section once the PR is merged upstream.**
+> **Temporary — delete this section once the PRs are merged upstream.**
 
-The vendored `todoist-shortcuts.js` includes a fix for popover auto-close
-([mgsloan/todoist-shortcuts#282](https://github.com/mgsloan/todoist-shortcuts/issues/282),
-[#285](https://github.com/mgsloan/todoist-shortcuts/issues/285)) submitted as
-[PR #290](https://github.com/mgsloan/todoist-shortcuts/pull/290). The fix adds
-PointerEvent dispatch (`pointerdown`/`pointerup`) to the `click()` helper, which
-Todoist's UI (Radix UI) requires for popover toggle and outside-click dismissal.
+The vendored `todoist-shortcuts.js` includes:
+1.  A fix for popover auto-close ([mgsloan/todoist-shortcuts#282](https://github.com/mgsloan/todoist-shortcuts/issues/282), [#285](https://github.com/mgsloan/todoist-shortcuts/issues/285)) submitted as [PR #290](https://github.com/mgsloan/todoist-shortcuts/pull/290). The fix adds PointerEvent dispatch (`pointerdown`/`pointerup`) to the `click()` helper.
+2.  A replacement of custom scrolling logic with the native `scrollIntoView` API, submitted as [PR #287](https://github.com/mgsloan/todoist-shortcuts/pull/287).
 
-The fork lives at `../todoist-shortcuts/` (sibling directory). Until the PR is
-merged upstream, pull from the fork rather than upstream to keep the fix. The
-GitHub Action's auto-PR is disabled for the same reason — see
-`.github/workflows/check-upstream.yml`.
+**Warning:** These changes have been merged into this repository before being accepted upstream. Updating from upstream via `update-shortcuts.sh` will overwrite these changes and likely break functionality until they are officially merged.
+
+The fork lives at `../todoist-shortcuts/` (sibling directory). Until the PRs are merged upstream, pull from the fork rather than upstream to keep the fixes. The GitHub Action's auto-PR is disabled for the same reason — see `.github/workflows/check-upstream.yml`.
 
 ## Updating Vendored Scripts
 

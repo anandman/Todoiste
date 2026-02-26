@@ -904,7 +904,7 @@
 
   async function scrollTaskEditorIntoView() {
     withUnique(document, '.task_editor', all, (editor) => {
-      verticalScrollIntoView(editor, 0, true, 0.6);
+      editor.scrollIntoView({block: 'center', behavior: 'instant'});
     });
   }
 
@@ -3936,17 +3936,20 @@
   }
 
   function scrollTaskIntoView(task) {
-    verticalScrollIntoView(task, 0, false, 0.5);
+    const rect = task.getBoundingClientRect();
+    const aboveViewport = rect.top < rect.height;
+    const belowViewport = rect.bottom > window.innerHeight;
+    if (aboveViewport || belowViewport) {
+      task.scrollIntoView({block: 'center', behavior: 'instant'});
+    }
   }
 
   function scrollTaskToBottom(task) {
-    verticalScrollIntoView(task, 0, true, 1);
-    scrollTaskIntoView(task);
+    task.scrollIntoView({block: 'end', behavior: 'instant'});
   }
 
   function scrollTaskToTop(task) {
-    verticalScrollIntoView(task, 0, true, 0);
-    scrollTaskIntoView(task);
+    task.scrollIntoView({block: 'start', behavior: 'instant'});
   }
 
   // Exception thrown by requireCursor.
@@ -4116,27 +4119,6 @@
     return style;
   }
 
-  // Scrolls the specified element into view by positioning the top of the
-  // element in the middle of the window, but only if necessary to bring it into
-  // view. Does not work well for elements that are larger than half a screen
-  // full.
-  function verticalScrollIntoView(el, marginBottom, skipCheck, t) {
-    withViewContent((content) => {
-      const oy = pageOffset(el).y - pageOffset(content).y;
-      const cy = oy - content.scrollTop;
-      const h = el.offsetHeight;
-      const overflowDiv = getUnique(
-          content, '.action_head__overflow_actions');
-      const overflowHeight = overflowDiv ? overflowDiv.offsetHeight : 0;
-      if (skipCheck ||
-          cy < el.offsetHeight + overflowHeight ||
-          cy + h > content.offsetHeight - marginBottom) {
-        // TODO: for very large tasks, this could end up with the whole task not
-        // being in view.
-        content.scrollTo(0, oy - lerp(0, content.offsetHeight, t));
-      }
-    });
-  }
 
   // Alias for document.getElementById
   function getById(id) {
@@ -4378,18 +4360,6 @@
     el.dispatchEvent(new MouseEvent('click', eventOptions));
   }
 
-  // Sum offsetTop / offsetLeft of all offsetParent to compute x / y.
-  function pageOffset(el) {
-    let x = 0;
-    let y = 0;
-    let cur = el;
-    while (cur) {
-      x += cur.offsetLeft;
-      y += cur.offsetTop;
-      cur = cur.offsetParent;
-    }
-    return {x, y};
-  }
 
   function clientOffset(el) {
     const bounds = el.getBoundingClientRect();
