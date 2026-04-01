@@ -29,7 +29,7 @@ struct TodoistWebView: NSViewRepresentable {
         context.coordinator.webView = webView
         context.coordinator.contentController = contentController
 
-        webView.load(URLRequest(url: URL(string: "https://todoist.com/app")!))
+        webView.load(URLRequest(url: URL(string: "https://app.todoist.com/app")!))
         return webView
     }
 
@@ -246,20 +246,20 @@ struct TodoistWebView: NSViewRepresentable {
             let host = url.host ?? ""
             let path = url.path
 
-            // Keep only Todoist app/auth routes in-app. Non-app routes (e.g. file URLs)
-            // should open externally so the webview doesn't get stuck on a document view.
-            let isTodoistInAppRoute =
-                host.hasSuffix("todoist.com") &&
-                (path == "/" || path.hasPrefix("/app") || path.hasPrefix("/auth") || path.hasPrefix("/oauth"))
+            // Keep all Todoist routes in-app. The login/OAuth flow uses paths beyond
+            // /app and /auth (e.g. /users/...), so restricting by path breaks login.
+            let isTodoistInAppRoute = host.hasSuffix("todoist.com")
 
-            // OAuth providers should remain in-app.
+            // OAuth providers stay in-app ONLY during login flows. Once logged
+            // in (webview is on /app/...), these domains open externally so that
+            // e.g. a Facebook link in a task opens in the browser, not in-app.
+            let isLoggedIn = webView.url?.path.hasPrefix("/app") == true
             let oauthDomains = [
-                "google.com",
                 "accounts.google.com",
                 "appleid.apple.com",
-                "facebook.com",
+                "www.facebook.com",
             ]
-            let isOAuthRoute = oauthDomains.contains { host.hasSuffix($0) }
+            let isOAuthRoute = !isLoggedIn && oauthDomains.contains { host == $0 }
 
             if isTodoistInAppRoute || isOAuthRoute {
                 decisionHandler(.allow)
