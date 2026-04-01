@@ -50,7 +50,7 @@ Todoiste does the same injection natively via `WKWebView`:
 3. Keep OAuth flows in-app; open external links in default browser
 4. Bridge web notifications to native macOS notifications
 
-Detailed implementation notes (script ordering, bridge behavior, caveats) are documented in `AGENTS.md`.
+Detailed implementation notes (script ordering, bridge behavior, caveats) are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Keyboard Shortcuts
 
