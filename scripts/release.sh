@@ -175,8 +175,12 @@ mkdir -p build
 # ~100MB of DerivedData syncs between machines and Dropbox writes "conflicted
 # copy" files inside it when two builds overlap, which corrupts builds.
 xattr -w com.dropbox.ignored 1 build 2>/dev/null || true
+# generic/platform=macOS matters: with no -destination, xcodebuild picks the
+# first arch-specific destination (arm64) and builds ONLY that, despite
+# ARCHS=arm64 x86_64. v1.1.1 shipped Apple-Silicon-only for exactly that reason.
 xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \
   -configuration Release \
+  -destination 'generic/platform=macOS' \
   -derivedDataPath build \
   CODE_SIGN_STYLE=Manual \
   CODE_SIGN_IDENTITY="$IDENTITY" \
@@ -197,6 +201,13 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 [ -f "$APP/Contents/_CodeSignature/CodeResources" ] \
   || die "Bundle has no sealed resources — Gatekeeper would call this damaged"
 codesign -dvv "$APP" 2>&1 | grep -E 'Authority|TeamIdentifier|flags' | sed 's/^/  /'
+
+ARCHS_BUILT=$(lipo -archs "$APP/Contents/MacOS/Todoiste" 2>/dev/null)
+echo "  architectures: $ARCHS_BUILT"
+case "$ARCHS_BUILT" in
+  *x86_64*arm64*|*arm64*x86_64*) ;;
+  *) die "Expected a universal binary, got '$ARCHS_BUILT'. Intel Macs could not run this." ;;
+esac
 
 # Apple refuses to notarize anything carrying the debugger-attach entitlement.
 # Xcode injects it unless CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO, even though

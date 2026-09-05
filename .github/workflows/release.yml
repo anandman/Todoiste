@@ -46,6 +46,7 @@ jobs:
         run: |
           xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \
             -configuration Release \
+            -destination 'generic/platform=macOS' \
             -derivedDataPath ./build \
             CODE_SIGN_IDENTITY="-" \
             build
@@ -56,6 +57,7 @@ jobs:
           cd ./build/Build/Products/Release
           codesign --verify --deep --strict --verbose=2 Todoiste.app
           test -f Todoiste.app/Contents/_CodeSignature/CodeResources
+          lipo -archs Todoiste.app/Contents/MacOS/Todoiste | tee /dev/stderr | grep -q x86_64
 
       - name: Package App
         run: |
