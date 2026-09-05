@@ -213,7 +213,26 @@ echo "  $DMG ($(du -h "$DMG" | cut -f1))"
 # ---------------------------------------------------------------- notarize
 
 step "Notarizing (this can take a few minutes)"
-xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+SUBMIT_LOG=$(mktemp)
+set +e
+xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1 | tee "$SUBMIT_LOG"
+set -e
+
+# A rejected submission still exits 0, so check the reported status. Without
+# this the script marches on to stapling and fails with an opaque "Error 65"
+# instead of Apple's actual complaint.
+if ! grep -q "status: Accepted" "$SUBMIT_LOG"; then
+  SUBMISSION_ID=$(awk '/id: /{print $2; exit}' "$SUBMIT_LOG")
+  printf '\nNotarization did not succeed. Apple'"'"'s reasons:\n\n' >&2
+  if [ -n "$SUBMISSION_ID" ]; then
+    xcrun notarytool log "$SUBMISSION_ID" --keychain-profile "$NOTARY_PROFILE" >&2 || true
+    printf '\nFull log again any time with:\n  xcrun notarytool log %s --keychain-profile %s\n' \
+      "$SUBMISSION_ID" "$NOTARY_PROFILE" >&2
+  fi
+  rm -f "$SUBMIT_LOG"
+  exit 1
+fi
+rm -f "$SUBMIT_LOG"
 
 step "Stapling"
 xcrun stapler staple "$DMG"
