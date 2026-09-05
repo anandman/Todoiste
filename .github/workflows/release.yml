@@ -27,17 +27,35 @@ jobs:
         run: xcodegen generate
 
       - name: Build App
+        # Do NOT set CODE_SIGNING_ALLOWED=NO. It skips the codesign step, so the
+        # bundle ships with only the linker's ad-hoc signature and no sealed
+        # resources (_CodeSignature/CodeResources). Gatekeeper then fails
+        # verification outright and tells users the app is "damaged" and should be
+        # moved to the Trash — which right-click > Open cannot get past. Letting it
+        # ad-hoc sign normally yields a valid signature, so a quarantined download
+        # gets the ordinary "unidentified developer" prompt instead.
         run: |
           xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \
             -configuration Release \
             -derivedDataPath ./build \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="-" \
             build
+
+      - name: Verify signature
+        # Fail loudly here rather than shipping something Gatekeeper calls damaged.
+        run: |
+          cd ./build/Build/Products/Release
+          codesign --verify --deep --strict --verbose=2 Todoiste.app
+          test -f Todoiste.app/Contents/_CodeSignature/CodeResources
 
       - name: Package App
         run: |
           cd ./build/Build/Products/Release
           ditto -c -k --sequesterRsrc --keepParent Todoiste.app Todoiste.zip
+          mkdir -p dmg
+          cp -R Todoiste.app dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname Todoiste -srcfolder dmg -ov -format UDZO Todoiste.dmg
 
       # NOTE: Signing and Notarization steps will go here once the Apple Developer account is ready.
       # These require certificates stored in GitHub Secrets.
@@ -45,6 +63,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ./build/Build/Products/Release/Todoiste.zip
+          files: |
+            ./build/Build/Products/Release/Todoiste.dmg
+            ./build/Build/Products/Release/Todoiste.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

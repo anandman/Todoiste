@@ -12,8 +12,16 @@ Todoist's official Mac app doesn't support the todoist-shortcuts extension. Usin
 
 ## Installing
 
-There are no prebuilt releases yet — build from source (below). To install the
-built app so it shows up in Spotlight and the Dock:
+Download the latest `Todoiste.dmg` from
+[Releases](https://github.com/anandman/Todoiste/releases), open it, and drag
+Todoiste to Applications.
+
+The build is signed ad-hoc, not with a Developer ID, so macOS will refuse to
+open it the first time. Right-click the app and choose **Open**, or go to
+System Settings → Privacy & Security and click **Open Anyway**. After that it
+launches normally.
+
+To build and install from source instead:
 
 ```bash
 xcodegen generate   # see Building below if you don't have xcodegen
