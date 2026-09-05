@@ -59,8 +59,11 @@ if git rev-parse "$TAG" >/dev/null 2>&1; then
 fi
 
 # A Developer ID Application identity is what makes notarization possible.
+# `|| true` matters: with `set -e` plus `pipefail`, grep finding nothing makes
+# the whole substitution fail and aborts the script silently, before the
+# explanatory error below can run.
 IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
-  | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')
+  | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/' || true)
 if [ -z "$IDENTITY" ]; then
   cat >&2 <<'MSG'
 
@@ -93,7 +96,7 @@ echo "  identity: $IDENTITY"
 
 # Team ID is the OU field of the signing certificate.
 TEAM_ID=$(security find-certificate -c "$IDENTITY" -p 2>/dev/null \
-  | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*OU=\([^,]*\).*/\1/p')
+  | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*OU=\([^,]*\).*/\1/p' || true)
 [ -n "$TEAM_ID" ] || die "Could not determine Team ID from the signing certificate"
 echo "  team:     $TEAM_ID"
 
