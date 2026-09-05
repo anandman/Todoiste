@@ -182,6 +182,7 @@ xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \
   CODE_SIGN_IDENTITY="$IDENTITY" \
   DEVELOPMENT_TEAM="$TEAM_ID" \
   ENABLE_HARDENED_RUNTIME=YES \
+  CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
   OTHER_CODE_SIGN_FLAGS="--timestamp" \
   build \
   | tail -3
@@ -196,6 +197,29 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 [ -f "$APP/Contents/_CodeSignature/CodeResources" ] \
   || die "Bundle has no sealed resources — Gatekeeper would call this damaged"
 codesign -dvv "$APP" 2>&1 | grep -E 'Authority|TeamIdentifier|flags' | sed 's/^/  /'
+
+# Apple refuses to notarize anything carrying the debugger-attach entitlement.
+# Xcode injects it unless CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO, even though
+# Todoiste.entitlements is an empty dict. Catch it here rather than after a
+# round trip to the notary service.
+if codesign -d --entitlements - --xml "$APP" 2>/dev/null | grep -q 'get-task-allow'; then
+  cat >&2 <<'MSG'
+
+ERROR: the built app requests com.apple.security.get-task-allow.
+
+  This is the debugger-attach entitlement. Apple rejects notarization with
+  "The executable requests the com.apple.security.get-task-allow entitlement."
+
+  Xcode injects it automatically; the build above passes
+  CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO to suppress it. If it is present
+  anyway, something re-signed the bundle or that flag stopped taking effect.
+
+  Inspect with:
+      codesign -d --entitlements - --xml <app> | plutil -convert xml1 -o - -
+MSG
+  exit 1
+fi
+echo "  entitlements: no get-task-allow"
 
 # ---------------------------------------------------------------- package
 
