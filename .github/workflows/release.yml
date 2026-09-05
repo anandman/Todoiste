@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*' # Trigger on version tags like v1.0.0
 
+permissions:
+  contents: write # required for the release step to create a Release
+
 jobs:
   release:
     runs-on: macos-14
@@ -20,10 +23,10 @@ jobs:
 
       - name: Build App
         run: |
-          xcodebuild -scheme Todoiste 
-            -configuration Release 
-            -derivedDataPath ./build 
-            CODE_SIGNING_ALLOWED=NO 
+          xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \
+            -configuration Release \
+            -derivedDataPath ./build \
+            CODE_SIGNING_ALLOWED=NO \
             build
 
       - name: Package App
@@ -35,7 +38,7 @@ jobs:
       # These require certificates stored in GitHub Secrets.
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: ./build/Build/Products/Release/Todoiste.zip
         env:
