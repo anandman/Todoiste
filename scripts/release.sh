@@ -83,7 +83,7 @@ ERROR: No "Developer ID Application" signing identity found in the keychain.
 
   This machine can still build and run the app normally — signing is only
   needed to publish:
-      xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \\
+      xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \
         -configuration Release -derivedDataPath build build
 
   As a fallback, .github/workflows/release.yml can publish an ad-hoc signed
