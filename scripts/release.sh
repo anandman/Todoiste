@@ -45,6 +45,12 @@ step "Preflight"
 command -v xcodegen >/dev/null || die "xcodegen not found. brew install xcodegen"
 command -v gh >/dev/null || die "gh not found. brew install gh"
 
+# Checked here because the publish step runs last: an unauthenticated gh would
+# leave the tag pushed with no release attached to it.
+if [ "$DRY_RUN" = false ] && ! gh auth status >/dev/null 2>&1; then
+  die "gh is not authenticated. Run: gh auth login"
+fi
+
 VERSION=$(awk -F'"' '/MARKETING_VERSION:/ {print $2; exit}' project.yml)
 [ -n "$VERSION" ] || die "Could not read MARKETING_VERSION from project.yml"
 TAG="v$VERSION"
