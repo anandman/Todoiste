@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Workflow actions are pinned to commit SHAs so a compromised or moved tag
+  # cannot silently run new code with access to repository secrets. Pinning
+  # freezes the version, so let Dependabot propose the bumps — it rewrites the
+  # SHA and the trailing "# vN" comment together.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"

@@ -1,9 +1,16 @@
 name: Build and Release
 
+# Manual only. Releases are normally cut with ./scripts/release.sh, which signs
+# and notarizes locally so the Developer ID certificate never touches GitHub.
+# This workflow is the fallback for when that Mac isn't available: it produces
+# an ad-hoc signed DMG, which works but makes users clear Gatekeeper by hand on
+# first launch. It does not run on tag push, so it cannot race a local release.
 on:
-  push:
-    tags:
-      - 'v*' # Trigger on version tags like v1.0.0
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach the DMG to (e.g. v1.2.0)"
+        required: true
 
 permissions:
   contents: write # required for the release step to create a Release
@@ -13,7 +20,9 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Select newest Xcode
         # xcodegen emits objectVersion 77, which needs Xcode 16+. Pick the
@@ -51,7 +60,6 @@ jobs:
       - name: Package App
         run: |
           cd ./build/Build/Products/Release
-          ditto -c -k --sequesterRsrc --keepParent Todoiste.app Todoiste.zip
           mkdir -p dmg
           cp -R Todoiste.app dmg/
           ln -s /Applications dmg/Applications
@@ -61,10 +69,9 @@ jobs:
       # These require certificates stored in GitHub Secrets.
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          files: |
-            ./build/Build/Products/Release/Todoiste.dmg
-            ./build/Build/Products/Release/Todoiste.zip
+          tag_name: ${{ inputs.tag }}
+          files: ./build/Build/Products/Release/Todoiste.dmg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
