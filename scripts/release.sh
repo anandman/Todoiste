@@ -97,6 +97,27 @@ TEAM_ID=$(security find-certificate -c "$IDENTITY" -p 2>/dev/null \
 [ -n "$TEAM_ID" ] || die "Could not determine Team ID from the signing certificate"
 echo "  team:     $TEAM_ID"
 
+if ! xcrun --find notarytool >/dev/null 2>&1; then
+  cat >&2 <<MSG
+
+ERROR: xcrun cannot find notarytool.
+
+  It ships with Xcode 13+, so this usually means the developer directory
+  points at a bare Command Line Tools install rather than full Xcode.
+
+  Currently: $(xcode-select -p 2>/dev/null || echo '(unset)')
+
+  Fix:
+      sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+      xcrun --find notarytool
+
+  Do not work around this by calling notarytool via its absolute path —
+  xcodebuild resolves through the same developer directory and would still
+  be wrong.
+MSG
+  exit 1
+fi
+
 if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
   die "No notarytool credential profile '$NOTARY_PROFILE'. See the setup notes at the top of this script."
 fi
