@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict/>
+<dict>
+	<!-- Required for microphone access under the hardened runtime, which
+	     release.sh enables for notarization. Without it the process is denied
+	     at the OS level, getUserMedia fails, and Todoist's Ramble shows a
+	     misleading "allow microphone in your browser settings" message. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
 </plist>
