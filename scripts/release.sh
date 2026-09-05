@@ -75,7 +75,16 @@ ERROR: No "Developer ID Application" signing identity found in the keychain.
   membership. Create it in Xcode > Settings > Accounts > Manage Certificates,
   or at developer.apple.com > Certificates, Identifiers & Profiles.
 
-  Until then, releases can only be ad-hoc signed, and users will have to
+  Which machine: the Developer ID certificate lives on minion, the primary
+  build machine. Cut releases there.
+
+  This machine can still build and run the app normally — signing is only
+  needed to publish:
+      xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \\
+        -configuration Release -derivedDataPath build build
+
+  As a fallback, .github/workflows/release.yml can publish an ad-hoc signed
+  DMG (Actions > Build and Release > Run workflow). Users then have to
   right-click > Open on first launch.
 MSG
   exit 1
@@ -137,6 +146,11 @@ echo "  signing:  test signature OK"
 step "Building Release"
 xcodegen generate >/dev/null
 rm -rf build
+mkdir -p build
+# The repo lives in Dropbox and is built on more than one Mac. Without this,
+# ~100MB of DerivedData syncs between machines and Dropbox writes "conflicted
+# copy" files inside it when two builds overlap, which corrupts builds.
+xattr -w com.dropbox.ignored 1 build 2>/dev/null || true
 xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \
   -configuration Release \
   -derivedDataPath build \
