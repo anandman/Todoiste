@@ -5,11 +5,15 @@ on:
     - cron: "0 9 * * 1" # Every Monday at 9am UTC
   workflow_dispatch: # Allow manual trigger
 
+permissions:
+  contents: write # push the update branch
+  pull-requests: write # open the PR
+
 jobs:
   check-updates:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Fetch latest upstream scripts
         run: ./scripts/update-shortcuts.sh
@@ -27,11 +31,11 @@ jobs:
           fi
 
       - name: Create pull request
-        # Disabled until mgsloan/todoist-shortcuts#290 (PointerEvent fix) merges upstream.
-        # update-shortcuts.sh pulls from upstream, so an automated PR right now would
-        # revert the fix. Re-enable by removing the "if: false" line once the PR is merged.
-        if: false
-        uses: peter-evans/create-pull-request@v6
+        # Re-enabled 2026-09-05: #290 merged upstream 2026-07-31 and #287 was
+        # superseded by upstream's own scrollIntoView work, so the vendored
+        # scripts are plain upstream master with no local patches to clobber.
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
         with:
           commit-message: "Update vendored todoist-shortcuts scripts"
           title: "Update todoist-shortcuts to latest upstream"
@@ -40,5 +44,16 @@ jobs:
 
             Review the diff carefully — upstream changes to DOM selectors or option names
             may require updates to `bootstrap.js`.
+
+            Checklist before merging:
+            - [ ] `grep -oE "options\['[^']+'\]" Todoiste/Resources/todoist-shortcuts.js | sort -u`
+                  still returns only `mouse-behavior` and `cursor-movement`. If not, update
+                  `SettingsView.swift` and `injectOptions()` in `WebView.swift`.
+            - [ ] `Todoiste/Resources/todoist-shortcuts.js` still contains the string
+                  `Configure todoist-shortcuts options`, which `bootstrap.js` matches on.
+            - [ ] Build, then reinstall to `/Applications` — Cmd+R in Xcode does NOT
+                  update the installed copy. Press `?` in the app to confirm the
+                  shortcuts loaded.
+            - [ ] Tag a new `v*` release so the published build carries the update.
           branch: update-todoist-shortcuts
           delete-branch: true

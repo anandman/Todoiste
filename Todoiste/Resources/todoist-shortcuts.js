@@ -1,4 +1,4 @@
-/* global svgs, TodoistShortcutsMousetrap */
+/* global TodoistShortcutsMousetrap */
 
 (function() {
   // Set this to true to get more log output.
@@ -44,8 +44,8 @@
     ['shift+r', openReminders],
     ['+', openAssign],
     ['>', openDeadline],
-    [['shift+j', 'shift+down'], moveDown],
-    [['shift+k', 'shift+up'], moveUp],
+    [['shift+j', 'shift+down', 'alt+down'], moveDown],
+    [['shift+k', 'shift+up', 'alt+up'], moveUp],
     [['shift+h', 'shift+left'], moveOut],
     [['shift+l', 'shift+right'], moveIn],
 
@@ -78,13 +78,12 @@
     ['shift+c', toggleTimer],
 
     // Projects
-    //
-    // Disabled as it's broken
-    // ['shift+p', openCurrentProjectLeftNavMenu],
 
-    // Bulk reschedule / move modes were removed
-    ['* t', notifyBulkActionsRemoved],
-    ['* v', notifyBulkActionsRemoved],
+    ['shift+p', openCurrentProjectLeftNavMenu],
+
+    // Bulk reschedule / move modes
+    ['* t', bulkSchedule],
+    ['* v', bulkMove],
 
     // Other
 
@@ -102,6 +101,7 @@
     ['ctrl+c', copyCursorOrSelectedAsMarkdown],
     ['ctrl+shift+/', openRandomTask],
     ['w', openMoreActionsMenu],
+    ['shift+v', nextLayout],
 
     // See https://github.com/mgsloan/todoist-shortcuts/issues/30
     // [???, importFromTemplate],
@@ -117,8 +117,10 @@
     ]);
   }
 
-  // Scheduling keybindings (used when scheduler is open)
-  const SCHEDULE_BINDINGS = [].concat(SCHEDULE_CURSOR_BINDINGS, [
+  // The keys which settle on a date.  Kept apart from the rest of the
+  // scheduling keys because they are the ones bulk schedule mode moves on to
+  // the next task after.
+  const SCHEDULE_DATE_BINDINGS = [
     ['c', scheduleToday],
     ['t', schedulePlusN(1)],
     ['w', scheduleNextWeek],
@@ -136,15 +138,41 @@
     ['7', schedulePlusN(7)],
     ['8', schedulePlusN(8)],
     ['9', schedulePlusN(9)],
-    ['alt+t', scheduleTime],
-    ['shift+t', scheduleText],
-    ['escape', closeContextMenus],
-    // See #256 for why this is no longer needed
-    // ['fallback', schedulerFallback],
-    // See #252 for why these are disabled.
-    [['j', 'k', 'up', 'down'], noop],
-  ]);
+  ];
+
+  // Scheduling keybindings (used when scheduler is open)
+  const SCHEDULE_BINDINGS = [].concat(
+      SCHEDULE_CURSOR_BINDINGS, SCHEDULE_DATE_BINDINGS, [
+        ['alt+t', scheduleTime],
+        ['shift+t', scheduleText],
+        ['escape', closeContextMenus],
+        // See #256 for why this is no longer needed
+        // ['fallback', schedulerFallback],
+        // Bound to nothing at all, rather than to moving the cursor, so
+        // that they don't reschedule a different task from the one the
+        // scheduler was opened for.  See #252.  Todoist's calendar has no
+        // use for them either - it does not navigate by arrow key.
+        [['j', 'k', 'up', 'down'], noop],
+      ]);
   const SCHEDULE_KEYMAP = 'schedule';
+
+  // Bulk schedule mode keybindings.  The date keys are rebound to also move
+  // on to the next task, since Todoist leaves the scheduler open after a date
+  // is clicked in its calendar; mousetrap takes the later binding for a key.
+  // Escape isn't here because leaving the mode has to happen before the
+  // scheduler closes - see 'bulkModeKeyHandler'.
+  const BULK_SCHEDULE_BINDINGS = [].concat(
+      SCHEDULE_BINDINGS,
+      SCHEDULE_DATE_BINDINGS.map(
+          (binding) => [binding[0], sequence([binding[1], nextBulkTask])]),
+      [[['v', 'alt+v'], switchToBulkMove]]);
+  const BULK_SCHEDULE_KEYMAP = 'bulk_schedule';
+
+  // Bulk move keybindings.  These can't be handled by mousetrap, because the
+  // project picker keeps focus in its search input, and mousetrap ignores
+  // events from inputs.  See 'handleBulkMoveKey'.
+  const BULK_MOVE_BINDINGS = [];
+  const BULK_MOVE_KEYMAP = 'bulk_move';
 
   const TASK_VIEW_BINDINGS = [
     ['enter', taskViewEdit],
@@ -183,7 +211,9 @@
   const MENU_LIST_KEYMAP = 'menu_list';
 
   // Keycode constants
+  const LEFT_ARROW_KEYCODE = 37;
   const UP_ARROW_KEYCODE = 38;
+  const RIGHT_ARROW_KEYCODE = 39;
   const DOWN_ARROW_KEYCODE = 40;
   const BACKSPACE_KEYCODE = 8;
   const ENTER_KEYCODE = 13;
@@ -214,6 +244,21 @@
   // sequence length for things based on prefixes.
   const MAX_NAVIGATE_PREFIX = 2;
 
+  // How long to leave a menu alone after it opens, before undoing the hover
+  // which was needed to get at the button that opens it.
+  const MENU_SETTLE_DELAY = 250;
+
+  // How long to leave Todoist's undo popup alone before clicking it.  The
+  // button is there before it does anything: clicking it the moment it
+  // appears is ignored, and since the popup goes away either way, the change
+  // silently stays.  Measured against the live site - no wait fails 3 times
+  // in 12, 300ms fails 1 in 14, 2s fails 0 in 8.
+  //
+  // The cost is that undo is this much slower to happen, and that pressing it
+  // in the last couple of seconds of the popup's life now misses it.  Both
+  // beat a quarter of undos quietly doing nothing.
+  const UNDO_SETTLE_DELAY = 2000;
+
   const TODOIST_SHORTCUTS_TIP = 'todoist_shortcuts_tip';
   const TODOIST_SHORTCUTS_TIP_TYPED = 'todoist_shortcuts_tip_typed';
   const TODOIST_SHORTCUTS_WARNING = 'todoist_shortcuts_warning';
@@ -221,6 +266,21 @@
   const TODOIST_SHORTCUTS_HELP_CONTAINER = 'todoist_shortcuts_help_container';
 
   const TODOIST_SHORTCUTS_GITHUB = 'https://github.com/mgsloan/todoist-shortcuts';
+
+  // A notice shown once, the first time this browser loads Todoist after
+  // updating.  To announce something else later, write the new text and give
+  // it a new id - the old id sitting in local storage is what stops a notice
+  // coming back, so reusing one means nobody who has seen it sees the new
+  // one.  Set the text to null to announce nothing.
+  const ANNOUNCEMENT_SEEN_KEY = 'todoist_shortcuts_announcement_seen';
+  const ANNOUNCEMENT_ID = 'shortcuts-working-again-208';
+  const ANNOUNCEMENT_DELAY = 3000;
+  const ANNOUNCEMENT_TEXT =
+        'todoist-shortcuts is now actively maintained again! ' +
+        'Sorry it was in a semi-broken state for a while. ' +
+        'A lot of shortcuts are working again, among them ' +
+        'bulk reschedule (* t), bulk move (* v), the project ' +
+        'menu (shift+p), scheduling, deadlines and the task view.';
 
   // This user script will get run on iframes and other todoist pages. Should
   // skip running anything if #todoist_app doesn't exist.
@@ -271,7 +331,10 @@
   // Take multiple actions (functions that take no arguments), and run them in
   // sequence.
   // eslint-disable-next-line no-unused-vars
-  async function sequence(actions) {
+  // Note that this is not itself async: it returns the action to run, and an
+  // async function would return a promise of one, which is not something that
+  // can be bound to a key.
+  function sequence(actions) {
     return async () => {
       for (let i = 0; i < actions.length; i++) {
         await actions[i]();
@@ -311,64 +374,60 @@
   }
 
   // Move the cursor to first / last task.
+  //
+  // Note that "last" means the last task Todoist has rendered.  Every view is
+  // a virtual list now, so in a long one - the "Upcoming" view in particular,
+  // which keeps appending days as it is scrolled - there can be more below.
   async function cursorFirst() {
-    disabledWithLazyLoading('Cursoring first task', () => {
-      setCursorToFirstTask('scroll');
-    });
+    setCursorToFirstTask('scroll');
   }
   async function cursorLast() {
-    disabledWithLazyLoading('Cursoring last task', () => {
-      setCursorToLastTask('scroll');
-    });
+    setCursorToLastTask('scroll');
   }
 
   async function cursorUpSection() {
-    disabledWithLazyLoading('Moving cursor up a section', () => {
-      const cursor = requireCursor();
-      let section = getSection(cursor);
-      section = findParent(section, matchingTag('li')) || section;
-      let firstTask = getFirstTaskIn(section);
-      if (firstTask && !sameElement(cursor)(firstTask)) {
-        // Not on first task, so move the cursor.
+    const cursor = requireCursor();
+    let section = getSection(cursor);
+    section = findParent(section, matchingTag('li')) || section;
+    let firstTask = getFirstTaskIn(section);
+    if (firstTask && !sameElement(cursor)(firstTask)) {
+      // Not on first task, so move the cursor.
+      setCursor(firstTask, 'scroll');
+      return;
+    }
+    // If already on the first task of this section, then select
+    // first task of prior populated section, if any exists.
+    section = section.previousSibling;
+    for (; section; section = section.previousSibling) {
+      firstTask = getFirstTaskIn(section);
+      if (firstTask) {
         setCursor(firstTask, 'scroll');
-      } else {
-        // If already on the first task of this section, then select
-        // first task of prior populated section, if any exists.
-        section = section.previousSibling;
-        for (; section; section = section.previousSibling) {
-          firstTask = getFirstTaskIn(section);
-          if (firstTask) {
-            setCursor(firstTask, 'scroll');
-            return;
-          }
-        }
+        return;
       }
-    });
+    }
   }
 
   async function cursorDownSection() {
-    disabledWithLazyLoading('Moving cursor down a section', () => {
-      const cursor = requireCursor();
-      let startSection = getSection(cursor);
-      startSection =
-        findParent(startSection, matchingTag('li')) || startSection;
-      let section = startSection.nextSibling;
-      for (; section; section = section.nextSibling) {
-        debug('section = ', section);
-        const firstTask = getFirstTaskIn(section);
-        if (firstTask) {
-          setCursor(firstTask, 'scroll');
-          return;
-        }
+    const cursor = requireCursor();
+    let startSection = getSection(cursor);
+    startSection =
+      findParent(startSection, matchingTag('li')) || startSection;
+    let section = startSection.nextSibling;
+    for (; section; section = section.nextSibling) {
+      debug('section = ', section);
+      const firstTask = getFirstTaskIn(section);
+      if (firstTask) {
+        setCursor(firstTask, 'scroll');
+        return;
       }
-      // If execution has reached this point, then we must already be
-      // on the last section.
-      const lastTask = getLastTaskInSection(startSection);
-      warn('Already on last section. lastTask =', lastTask);
-      if (lastTask) {
-        setCursor(lastTask, 'scroll');
-      }
-    });
+    }
+    // If execution has reached this point, then we must already be
+    // on the last section.
+    const lastTask = getLastTaskInSection(startSection);
+    warn('Already on last section. lastTask =', lastTask);
+    if (lastTask) {
+      setCursor(lastTask, 'scroll');
+    }
   }
 
   // Edit the task under the cursor.
@@ -432,6 +491,9 @@
   // when the task is scheduled. Only works for the cursor, not for the
   // selection.
   async function scheduleText() {
+    // Typing a date is the one case where the scheduler's input should keep
+    // focus, so stop blurring it.
+    stopKeepingSchedulerInputBlurred();
     const scheduler = findScheduler();
     if (scheduler) {
       withAll(scheduler, 'input', all, (el) => el.focus() );
@@ -448,41 +510,39 @@
   }
 
   async function scheduleTime() {
+    // Typing a time needs focus in the scheduler, so stop blurring it before
+    // opening the time panel rather than after.
+    stopKeepingSchedulerInputBlurred();
     if (!findScheduler()) {
       scheduleText();
     }
-    setTimeout(() => {
-      // TODO: less fragile way to find the "Time" button than relying
-      // on no other buttons having this attribute.
-      const success = withUnique(
-          document,
-          '.scheduler button[aria-controls]',
-          all,
-          (button) => {
-            click(button);
-            return true;
-          });
-      // Fallback on english text matching if the above doesn't work.
-      if (!success) {
-        clickUnique(findScheduler(), 'button', matchingText('Time'));
+    // Waiting for the scheduler rather than guessing at how long it takes to
+    // open, which is longer than it used to be.
+    const scheduler = await retryWithDelay('finding scheduler', findScheduler);
+    // The time button toggles, so pressing this while the time is already
+    // showing would hide it again.
+    if (!findTimeInput()) {
+      // Todoist used to mark the "Time" button with aria-controls and no
+      // longer does, leaving its text as the only way to tell it apart.
+      const timeButton =
+          getUnique(scheduler, 'button[aria-controls]') ||
+          getUnique(scheduler, 'button', matchingText('Time'));
+      if (!timeButton) {
+        warn('Couldn\'t find the scheduler\'s time button.');
+        return;
       }
-      focusTimeInput();
-    }, 50);
+      click(timeButton);
+    }
+    await focusTimeInput();
   }
 
   async function openDeadline() {
     const mutateCursor = getCursorToMutate();
     if (mutateCursor) {
-      clickTaskEdit(mutateCursor);
-      await clickAllRetrying(document, '[aria-label="Set deadline"]');
-      // Todoist seems to put back the focus, so try a few times to blur.
-      await blurSchedulerInput();
-      sleep(20);
-      await blurSchedulerInput();
-      sleep(50);
-      await blurSchedulerInput();
-      sleep(100);
-      await blurSchedulerInput();
+      // Via the task's contextual menu: the editor no longer has a control
+      // for this.
+      await clickTaskMenu(
+          mutateCursor, 'task-overflow-menu-deadline', false);
     }
   }
 
@@ -522,19 +582,49 @@
         });
   }
 
-  // Click 'next month' in schedule. Only does anything if schedule is open.
+  // Click the same day of the next month in the schedule's calendar. Only does
+  // anything if schedule is open.
+  //
+  // Todoist used to have a button for this, but the scheduler's buttons are
+  // now only today, tomorrow, next week and next weekend.
   async function scheduleNextMonth() {
+    const date = new Date();
+    const dayOfMonth = date.getDate();
+    // Moving to the start of the month before changing month avoids
+    // overshooting: setting the month while on the 31st, when the next month
+    // has 30 days, lands in the month after that instead.
+    date.setDate(1);
+    date.setMonth(date.getMonth() + 1);
+    date.setDate(Math.min(dayOfMonth, daysInMonth(date)));
+    clickSchedulerDate('scheduleNextMonth', date);
+  }
+
+  function daysInMonth(date) {
+    return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  }
+
+  // Clicks date on scheduler 1-9 days in the future
+  function schedulePlusN(n) {
+    return async () => {
+      const date = new Date();
+      date.setDate(date.getDate() + n);
+      clickSchedulerDate('schedulePlusN', date);
+    };
+  }
+
+  // Clicks a day in the scheduler's calendar, which labels them with the date
+  // in ISO format.
+  function clickSchedulerDate(name, date) {
+    const label = dateToIsoFormatUsingCurrentTimezone(date);
     withScheduler(
-        'scheduleNextMonth',
+        name,
         (scheduler) => {
-          clickUnique(
-              scheduler,
-              'button',
-              matchingAttr('data-track', 'scheduler|date_shortcut_nextmonth'));
+          clickUnique(scheduler, 'button', matchingAttr('aria-label', label));
         });
   }
 
-  // Clicks 'postpone' in scheduler.
+  // Clicks 'postpone' in the scheduler, which Todoist only offers for
+  // recurring tasks.
   async function schedulePostpone() {
     withScheduler(
         'schedulePostpone',
@@ -545,24 +635,6 @@
               matchingAttr('data-track',
                   'scheduler|date_shortcut_postpone'));
         });
-  }
-
-  // Clicks date on scheduler 1-9 days in the future
-  function schedulePlusN(n) {
-    return async () => {
-      const date = new Date();
-      date.setDate(date.getDate() + n);
-      buttonAriaLabel = dateToIsoFormatUsingCurrentTimezone(date);
-
-      withScheduler(
-          'schedulePlusN',
-          (scheduler) => {
-            clickUnique(
-                scheduler,
-                'button',
-                matchingAttr('aria-label', buttonAriaLabel));
-          });
-    };
   }
 
   // Click 'no due date' in schedule. Only does anything if schedule is open.
@@ -648,24 +720,18 @@
     return async () => {
       const mutateCursor = getCursorToMutate();
       if (mutateCursor) {
-        clickTaskEdit(mutateCursor);
-        await clickUniqueRetrying(
-            document,
-            '[data-action-hint="task-actions-priority-picker"]');
-        const menu = await getUniqueRetrying(document, '.priority_picker');
-        await clickPriorityMenu(menu, level);
-        // Click save button.
-        await clickUniqueRetrying(
-            document,
-            'div[data-testid="task-editor-action-buttons"] ' +
-            'button[type="submit"]');
+        // The task's contextual menu has priority items in it, so unlike
+        // opening the task editor, no separate save step is needed.
+        await clickTaskMenu(
+            mutateCursor,
+            'task-overflow-menu-priority-' + level,
+            false);
       } else {
         await clickUniqueRetrying(
             document,
             'button[data-action-hint="multi-select-toolbar-priority-picker"]');
-        await withUnique(document, '.priority_picker', all, async (menu) => {
-          await clickPriorityMenu(menu, level);
-        });
+        const menu = await getUniqueRetrying(document, '.priority_picker');
+        await clickPriorityMenu(menu, level);
       }
     };
   }
@@ -837,13 +903,6 @@
 
   // Selects all tasks, even those hidden by collapsing.
   async function selectAllTasks() {
-    /* Old definition before hacks to fix Todoist behavioral regressions (#281)
-    const allTasks = getTasks('include-collapsed');
-    for (let i = 0; i < allTasks.length; i++) {
-      setTimeout(() => selectTask(allTasks[i]));
-    }
-    */
-
     const selections = {};
     for (const task of getTasks('include-collapsed')) {
       selections[getTaskKey(task)] = true;
@@ -853,14 +912,6 @@
 
   // Selects all overdue tasks.
   async function selectAllOverdue() {
-    /* Old definition before hacks to fix Todoist behavioral regressions (#281)
-    for (const task of getTasks()) {
-      if (getUnique(task, '.date_overdue')) {
-        setTimeout(() => selectTask(task));
-      }
-    }
-    */
-
     const selections = {};
     for (const task of getTasks()) {
       if (getUnique(task, '.date_overdue')) {
@@ -902,10 +953,24 @@
     }
   }
 
+  // The li which holds the editor for adding or editing a task inline. This is
+  // also how getTasks recognizes it, when including editors.
+  const TASK_EDITOR_SELECTOR = 'li.manager';
+
+  function findTaskEditor() {
+    return getUnique(document, TASK_EDITOR_SELECTOR);
+  }
+
+  // Note that the editor is waited for: this gets called right after clicking
+  // something that opens it, before it has rendered.
   async function scrollTaskEditorIntoView() {
-    withUnique(document, '.task_editor', all, (editor) => {
-      editor.scrollIntoView({block: 'center', behavior: 'instant'});
-    });
+    const editor = await retryWithDelay(
+        'finding task editor', findTaskEditor).catch(() => null);
+    if (editor) {
+      verticalScrollIntoView(editor, 'nearest', false);
+    } else {
+      debug('no task editor to scroll into view.');
+    }
   }
 
   // Add a task above / below cursor. Unfortunately these options do not exist
@@ -935,7 +1000,7 @@
   async function openAssign() {
     const mutateCursor = getCursorToMutate();
     if (mutateCursor) {
-      await withTaskHovered(mutateCursor, () => {
+      await withHovered(mutateCursor, () => {
         const assignButton =
               getUnique(mutateCursor, '.task_list_item__person_picker');
         if (assignButton) {
@@ -994,58 +1059,128 @@
     clickAll(document, '.ts-modal-close');
   }
 
+  // The ids Todoist gives the layout radio buttons in the view options menu.
+  // In the order Todoist's own shift+v shortcut cycles through them.
+  const LAYOUTS = ['LIST', 'BOARD', 'CALENDAR'];
+
+  // Switches to the next layout, like Todoist's own shift+v. Since
+  // todoist-shortcuts takes over Todoist's key handling, its shortcut never
+  // runs, so the view options menu is used instead.
+  //
+  // Note that the calendar layout is only offered to Todoist Pro and Business
+  // customers, and that not every view has every layout, so this cycles
+  // through whichever ones are on offer.
+  async function nextLayout() {
+    if (!isViewOptionsOpen()) {
+      clickViewOptions();
+    }
+    try {
+      // Waiting for the first layout rather than for the menu itself, since
+      // the menu has no distinguishing attributes of its own.
+      await getUniqueRetrying(document, layoutQuery(LAYOUTS[0]));
+      const layouts = LAYOUTS
+          .map((layout) => getUnique(document, layoutQuery(layout)))
+          .filter((radio) =>
+            radio && !radio.disabled && isLayoutOffered(radio));
+      if (layouts.length < 2) {
+        info('Not switching layout, as this view offers no other layout.');
+        return;
+      }
+      const current = layouts.findIndex((radio) => radio.checked);
+      click(layouts[(current + 1) % layouts.length]);
+    } finally {
+      // The menu stays up after picking a layout, and would otherwise be
+      // toggled shut by the next press rather than switching layout again.
+      if (isViewOptionsOpen()) {
+        clickViewOptions();
+      }
+    }
+  }
+
+  // Layouts which the account's plan doesn't include are still listed, marked
+  // with an upgrade icon. Clicking one offers an upgrade instead of switching,
+  // and the offer then swallows further keypresses, so they are skipped.
+  function isLayoutOffered(radio) {
+    const label = findParent(radio, (el) => el.tagName === 'LABEL');
+    return !label || !getFirst(label, '[data-icon-name="upgrade-icon"]');
+  }
+
+  function isViewOptionsOpen() {
+    return getUnique(document, layoutQuery(LAYOUTS[0])) !== null;
+  }
+
+  function clickViewOptions() {
+    clickUnique(document, 'button[aria-label="View Options Menu"]');
+  }
+
+  function layoutQuery(layout) {
+    return 'input[type="radio"][id="' + layout + '"]';
+  }
+
   async function openMoreActionsMenu() {
     withUnique(document, 'header[aria-label^="Header:"]', all, (header) => {
-      for (const button of selectAll(header, 'button')) {
-        // If it contains 3 svg circles, it's the more menu
-        // button. Sad that there is no other identifying
-        // characteristic in the dom.
-        if (selectAll(button, 'circle').length == 3) {
-          click(button);
-          return;
-        }
+      // The one button in the header which opens a menu, rather than the
+      // three circles in its icon which this used to count.  Its label is
+      // translated, and the "Display" button beside it opens a dialog rather
+      // than a menu, so it doesn't match.
+      const button = getUnique(header, 'button[aria-haspopup=menu]');
+      if (!button) {
+        // "Today" and "Upcoming" have no such menu.
+        warn('This view has no "more actions" menu.');
+        return;
       }
-      throw new Error('Failed to find more actions menu');
+      click(button);
     });
   }
 
-  // TODO: Fix this
-  // eslint-disable-next-line no-unused-vars
+  // A project is linked to both as '/app/project/<id>' and as the slugged
+  // '/app/project/<name>-<id>', so paths are compared by the id they end in.
+  // Ids never contain a '-', project names often do.
+  function projectIdOfPath(path) {
+    return path.split('/').pop().split('-').pop();
+  }
+
   async function openCurrentProjectLeftNavMenu() {
     if (leftNavIsHidden()) {
       toggleLeftNav();
     }
-    const currentPath = document.location.pathname;
+    const currentId = projectIdOfPath(document.location.pathname);
     const currentProject = getUnique(
         document, '#left-menu-projects-panel li', (project) => {
           const link = getUnique(project, 'a');
           // If a project doesn't have an anchor tag, it's hidden and
           // we want to skip it.
-          return link !== null && link.href.endsWith(currentPath);
+          return link !== null &&
+            projectIdOfPath(new URL(link.href).pathname) === currentId;
         });
     if (!currentProject) {
-      throw new Error('Could not find current project.');
+      warn('Not opening the project menu, as the current view is not one of ' +
+           'the projects in the left nav.');
+      return;
     }
-    const projectButtons = selectAll(currentProject, 'button');
-    let moreProjectActionsButton = null;
-    switch (projectButtons.length) {
-      case 1:
-        moreProjectActionsButton = projectButtons[0];
-        break;
-      case 2:
-        // If a project has two buttons, the first is the "toggle
-        // collapse" button and the second is the "more actions"
-        // button.
-        moreProjectActionsButton = projectButtons[1];
-        break;
-      case 0:
-        throw new Error(
-            'Project element has no buttons (expected "more actions" button.');
-      default:
-        throw new Error(
-            'Project element has more than two buttons, which is unexpected.');
+    // The row's other button toggles its sub-projects, and which comes first
+    // varies, so the menu button is picked out by opening a popup.  Its label
+    // would be translated, its classes are generated.
+    const moreProjectActionsButton = getUnique(
+        currentProject, 'button[aria-haspopup=menu]');
+    if (!moreProjectActionsButton) {
+      warn('Couldn\'t find the project\'s "more actions" button.');
+      return;
     }
-    click(moreProjectActionsButton);
+    await withHovered(currentProject, async () => {
+      click(moreProjectActionsButton);
+      // The menu belongs to the button, which the row only renders while it
+      // is hovered, so ending the hover too early unmounts the button and
+      // takes the menu with it.  Waiting for the menu - the element the
+      // button's 'aria-controls' names - is not enough on its own: Todoist
+      // needs a moment after that before the open menu is what keeps the
+      // button rendered.
+      await retryWithDelay('waiting for the project menu to open', () => {
+        const id = moreProjectActionsButton.getAttribute('aria-controls');
+        return id && getById(id);
+      });
+      await sleep(MENU_SETTLE_DELAY);
+    });
     setTimeout(updateKeymap, 10);
   }
 
@@ -1139,10 +1274,10 @@
     withLeftMenuItems((menuItems, current) => {
       // If on the last item, or no item, select the first item.
       if (current >= menuItems.length - 1 || current < 0) {
-        menuItems[0].click();
+        clickLeftMenuItem(menuItems, 0);
       // Otherwise, select the next item.
       } else {
-        menuItems[current + 1].click();
+        clickLeftMenuItem(menuItems, current + 1);
       }
     });
   }
@@ -1152,10 +1287,10 @@
     withLeftMenuItems((menuItems, current) => {
       // If on the first item, or no item, select the last item.
       if (current <= 0) {
-        menuItems[menuItems.length - 1].click();
+        clickLeftMenuItem(menuItems, menuItems.length - 1);
       // Otherwise, select the previous item.
       } else {
-        menuItems[current - 1].click();
+        clickLeftMenuItem(menuItems, current - 1);
       }
     });
   }
@@ -1164,67 +1299,128 @@
   // currently selected one, if any.
   function withLeftMenuItems(f) {
     withId('top-menu', (topItems) => {
-      const favoritesPanel =
-            withId('left-menu-favorites-panel', (panel) => { return panel; });
-      const projectsPanel =
-            withId('left-menu-projects-panel', (panel) => { return panel; });
-      withLeftMenuItemLinks([topItems, favoritesPanel, projectsPanel], f);
+      // The favorites panel only exists when there are favorites, and the
+      // projects panel only when there are projects, so missing ones are
+      // expected rather than a problem.
+      const panels = [topItems];
+      const panelIds =
+            ['left-menu-favorites-panel', 'left-menu-projects-panel'];
+      for (const id of panelIds) {
+        const panel = getById(id);
+        if (panel) {
+          panels.push(panel);
+        }
+      }
+      withLeftMenuItemLinks(panels, f);
     });
   }
 
   function withLeftMenuItemLinks(containers, f) {
     const links = [];
-    let current = -1;
-    const allCurrents = [];
+    // Indices of the items which link to the page being viewed. There can be
+    // more than one, because a favorited project is listed in both the
+    // favorites and the projects panel.
+    const currents = [];
     for (const container of containers) {
       withAll(container, 'li', all, (item) => {
         const link =
               getFirst(item, '.item_content') ||
               getFirst(item, 'a') ||
               getFirst(item, '.name');
-        if (hidden(item)) {
-        } else if (!link) {
-          warn('Didn\'t find link in', item.innerHTML);
-        } else {
-          links.push(link);
-          const firstChild = item.firstElementChild;
-          // Terrible hack around obfuscated class names.
-          if (matchingClass('current')(item) ||
-              (firstChild.tagName === 'DIV' &&
-               !firstChild.classList.contains('arrow') &&
-               firstChild.classList.length >= 6)) {
-            if (!allCurrents.length) {
-              current = links.length - 1;
-            }
-            allCurrents.push(item.innerHTML);
-          }
+        // Items like the search box have no link, and collapsed projects hide
+        // their children. Neither is worth warning about.
+        if (hidden(item) || !link) {
+          return;
+        }
+        links.push(link);
+        if (isLinkToCurrentPage(getFirst(item, 'a'))) {
+          currents.push(links.length - 1);
         }
       });
     }
-    if (allCurrents.length > 1) {
-      warn('Multiple current menu items: ', allCurrents);
-    }
-    f(links, current);
+    f(links, chooseCurrentLeftMenuItem(currents));
   }
 
+  // Which of the items linking to the current page to navigate relative to.
+  // Preferring the one navigated to last is what keeps navigation from
+  // bouncing between a favorited project's two entries: without it, moving off
+  // the projects entry would start over from the favorites entry.
+  function chooseCurrentLeftMenuItem(currents) {
+    if (!currents.length) {
+      return -1;
+    }
+    if (currents.includes(lastLeftMenuIndex)) {
+      return lastLeftMenuIndex;
+    }
+    return currents[0];
+  }
+
+  function isLinkToCurrentPage(link) {
+    if (!link) {
+      return false;
+    }
+    const href = link.getAttribute('href');
+    if (!href) {
+      return false;
+    }
+    // Comparing pathnames rather than hrefs, so that query strings and
+    // fragments don't matter.
+    return identifyPath(new URL(href, document.baseURI).pathname) ===
+      identifyPath(window.location.pathname);
+  }
+
+  // Reduces a path to something comparable, by dropping the slug that Todoist
+  // puts in front of a project / filter / label id. Sidebar links have the
+  // slug ("/app/project/shopping-6X7yz"), but the same page navigated to
+  // directly may not ("/app/project/6X7yz").
+  function identifyPath(pathname) {
+    const segments = pathname.split('/').filter((segment) => segment);
+    const last = segments.pop() || '';
+    const lastDash = last.lastIndexOf('-');
+    segments.push(lastDash < 0 ? last : last.substring(lastDash + 1));
+    return segments.join('/');
+  }
+
+  // Index into the left menu items of the one navigated to by the most recent
+  // nextLeftMenuItem / prevLeftMenuItem. MUTABLE.
+  let lastLeftMenuIndex = -1;
+
+  // Note that this uses the element's own click method rather than the
+  // synthetic click used elsewhere: sidebar items are draggable, and the
+  // pointer events that come with a synthetic click start a drag.
+  function clickLeftMenuItem(menuItems, index) {
+    lastLeftMenuIndex = index;
+    menuItems[index].click();
+  }
+
+  // Todoist only offers undo on the popup it puts up after a change, so this
+  // can only undo what that popup is still there for.
   async function undo() {
     // Triggering keypress appears to be broken.
     // todoistShortcut({key: 'z'});
-    withUnique(document, '[role=alert]', all, (alertContainer) => {
-      const foundByText = getUnique(
-          alertContainer, 'button', (el) => el.innerText === 'Undo');
-      if (foundByText) {
-        click(foundByText);
-        return;
+    //
+    // The most recent popup, since an older one can still be on its way out.
+    const alertContainer = getLast(document, '[role=alert]');
+    if (alertContainer) {
+      const undoButton =
+            getUnique(alertContainer, 'button',
+                (el) => el.innerText === 'Undo') ||
+            // Failing that - the label is translated - the popup's other
+            // button is the close cross, which is the one with an icon.
+            getUnique(alertContainer, 'button',
+                (el) => el.querySelector('svg') === null);
+      if (undoButton) {
+        await sleep(UNDO_SETTLE_DELAY);
+        if (undoButton.isConnected) {
+          click(undoButton);
+          return;
+        }
       }
-      const foundByLackOfSvg = getUnique(
-          alertContainer, 'button', (el) => el.querySelector('svg') == null);
-      if (foundByLackOfSvg) {
-        click(foundByLackOfSvg);
-        return;
-      }
-      notifyUser('Didn\'t find undo button, undo only works popup is visible.');
-    });
+    }
+    // Previously this said nothing at all when there was no popup, which is
+    // the case it was describing.
+    notifyUser('Nothing to undo. Undo only works while Todoist\'s "Undo" ' +
+               'popup is still showing.');
   }
 
   async function openNotifications() {
@@ -1242,15 +1438,19 @@
   }
 
   function leftNavIsHidden() {
+    // What the toggle button says, which is Todoist's own answer to the
+    // question rather than something inferred from the layout.
+    const toggle = getUnique(document, 'button[aria-controls=sidebar]');
+    const expanded = toggle && toggle.getAttribute('aria-expanded');
+    if (expanded) {
+      return expanded === 'false';
+    }
+    // Failing that, the sidebar is slid out of view by a negative margin.
+    // Note that this reads it with 'getComputedStyle': 'computedStyleMap' is
+    // Chrome-only, and used to make this always answer "shown" on Firefox.
     const appSidebar = getUnique(document, '.app-sidebar-container');
     if (appSidebar) {
-      // TODO: Fix this on firefox - always fails.
-      try {
-        return appSidebar.computedStyleMap().get('margin-left').value != 0;
-      } catch (e) {
-        warn('Failed to check if left nav is open:', e);
-        return false;
-      }
+      return parseFloat(getComputedStyle(appSidebar).marginLeft) !== 0;
     }
     warn('Couldn\'t figure out if left nav is open or not.');
     return false;
@@ -1263,8 +1463,16 @@
   }
 
   async function focusSearch() {
-    // TODO: does it work in other UI languages?
-    clickUnique(document, 'nav *[aria-label=Search]');
+    // Search is the one entry in the sidebar's top menu which is a button
+    // rather than a link, the rest being views to navigate to.  Its label is
+    // translated, so matching that only worked in english.
+    const search = getUnique(document, '#top-menu button') ||
+          getUnique(document, 'nav *[aria-label=Search]');
+    if (!search) {
+      warn('Couldn\'t find the search button.');
+      return;
+    }
+    click(search);
   }
 
   // Open help documentation.
@@ -1349,19 +1557,36 @@
     });
   }
 
+  // Clicks "Sync" in the account menu, which is where Todoist keeps it now.
   async function sync() {
-    let lastSynced = getById('last_synced');
-    if (!lastSynced) {
-      withId('help_btn', click);
-      lastSynced = getById('last_synced');
+    if (leftNavIsHidden()) {
+      toggleLeftNav();
     }
-    const priorElement = lastSynced.previousElementSibling;
-    const tag = priorElement.tagName.toLowerCase();
-    if (tag !== 'button') {
-      error('Expected element to be sync button, but instead it is ' + tag);
+    // The account menu is opened by the only button in the sidebar's nav
+    // which shows the account's avatar.  Its label is translated.
+    const accountMenuButton = getUnique(
+        document,
+        '.app-sidebar-container nav button[aria-haspopup=menu]',
+        hasChild('img'));
+    if (!accountMenuButton) {
+      warn('Couldn\'t find the account menu button, so not syncing.');
       return;
     }
-    click(priorElement);
+    click(accountMenuButton);
+    // Todoist annotates the sync item with when it last synced, which is a
+    // better hold on it than its translated label.
+    let syncItem = null;
+    try {
+      syncItem = await retryWithDelay(
+          'finding the sync menu item',
+          () => getUnique(
+              document, '[role=menuitem][aria-describedby=last-sync-info]'));
+    } catch (e) {
+      warn('Couldn\'t find "Sync" in the account menu:', e);
+      await closeContextMenus();
+      return;
+    }
+    click(syncItem);
   }
 
   const COMMAND_MENU_SELECTOR =
@@ -1371,10 +1596,11 @@
     const button = getUnique(document, COMMAND_MENU_SELECTOR);
     if (button) {
       click(button);
-    } else {
-      withId('help_btn', click);
-      clickUnique(document, COMMAND_MENU_SELECTOR);
+      return;
     }
+    // Todoist has dropped the dedicated button, and folded the command menu
+    // into search.
+    clickUnique(document, 'nav *[aria-label=Search]');
   }
 
   const TASK_VIEW_SELECTOR = 'div[data-testid="task-details-modal"]';
@@ -1454,18 +1680,16 @@
 
   function taskViewSetPriority(level) {
     return async () => {
-      withUnique(document, TASK_VIEW_SELECTOR, all, (taskView) => {
-        const actualLevel = invertPriorityLevel(level);
-        if (!getUnique(document, '.priority_picker')) {
-          clickUnique(taskView,
-              '[data-icon-name=priority-icon]');
-        }
-        withUnique(document, '.priority_picker', all, (picker) => {
-          clickUnique(
-              picker,
-              '[data-action-hint="task-actions-priority-' + actualLevel + '"]');
+      const actualLevel = invertPriorityLevel(level);
+      // The picker is opened by clicking the priority button, but it only
+      // appears asynchronously, so the click on the level needs to retry.
+      if (!getUnique(document, '.priority_picker')) {
+        withUnique(document, TASK_VIEW_SELECTOR, all, (taskView) => {
+          clickUnique(taskView, '[data-icon-name=priority-icon]');
         });
-      });
+      }
+      const picker = await getUniqueRetrying(document, '.priority_picker');
+      await clickPriorityMenu(picker, actualLevel);
     };
   }
 
@@ -1476,8 +1700,10 @@
   }
 
   async function taskViewDelete() {
-    withTaskViewMoreMenu((menu) => {
-      clickUnique(menu, 'kbd', matchingText('Delete'));
+    await withTaskViewMoreMenu((menu) => {
+      // Not by the kbd showing its shortcut: several items have one, and this
+      // item's says the modifier rather than the key.
+      clickUnique(menu, '[role="menuitem"]', startsWithText('Delete'));
     });
   }
 
@@ -1489,28 +1715,34 @@
 
   // eslint-disable-next-line no-unused-vars
   async function taskViewActivity() {
-    withTaskViewMoreMenu((menu) => {
+    await withTaskViewMoreMenu((menu) => {
       clickUnique(menu, 'div', matchingText('View task activity'));
     });
   }
 
-  function withTaskViewMoreMenu(f) {
-    withUnique(document, TASK_VIEW_SELECTOR, all, (taskView) => {
-      let overflowMenu = getTaskViewMoreMenu();
-      if (!overflowMenu) {
-        clickUniqueRetrying(taskView, 'button[aria-label="More actions"]');
-        overflowMenu = getTaskViewMoreMenu();
-      }
-      if (overflowMenu) {
-        f(overflowMenu);
-      } else {
-        warn('Couldn\'t find overflow menu.');
-      }
-    });
+  async function withTaskViewMoreMenu(f) {
+    const taskView = getUnique(document, TASK_VIEW_SELECTOR);
+    if (!taskView) {
+      warn('Not opening the task view menu, as the task view isn\'t open.');
+      return;
+    }
+    if (!getTaskViewMoreMenu()) {
+      // Awaited: the menu is not there until the click which opens it has
+      // been through Todoist's handler.
+      await clickUniqueRetrying(
+          taskView, 'button[aria-label="More actions"]');
+    }
+    const overflowMenu = await retryWithDelay(
+        'finding the task view menu', getTaskViewMoreMenu).catch(() => null);
+    if (overflowMenu) {
+      await f(overflowMenu);
+    } else {
+      warn('Couldn\'t find overflow menu.');
+    }
   }
 
   function getTaskViewMoreMenu() {
-    return getUniqueRetrying(
+    return getUnique(
         document, 'div.reactist_menulist[aria-label="More actions"]');
   }
 
@@ -1559,16 +1791,249 @@
   }
 
   async function selectMenuListItem() {
-    withCurrentFocusedMenuListItem(click);
-  }
-
-  function notifyBulkActionsRemoved() {
-    notifyUser('Bulk move (* v) and bulk reschedule (* t) shortcuts were ' +
-               'removed as they had stopped working and were not ' +
-               'straightforward to fix.');
+    // The element's own click method rather than the synthetic click, which
+    // the menu ignores.
+    withCurrentFocusedMenuListItem((item) => item.click());
   }
 
   async function noop() {}
+
+  /*****************************************************************************
+   * Bulk schedule / bulk move
+   *
+   * Both walk the task list from the cursor downwards, putting one dialog up
+   * per task and moving on to the next when it closes.  That is what makes
+   * them different from scheduling or moving a selection, which gives every
+   * task the same date or project.
+   */
+
+  const BULK_SCHEDULE = {
+    keymap: BULK_SCHEDULE_KEYMAP,
+    isOpen: checkSchedulerOpen,
+    open: async (task) => {
+      await clickTaskSchedule(task);
+      await blurSchedulerInput();
+    },
+  };
+
+  const BULK_MOVE = {
+    keymap: BULK_MOVE_KEYMAP,
+    isOpen: checkMoveToProjectOpen,
+    open: async (task) => await clickTaskMenu(
+        task, 'task-overflow-menu-move-to-project', true),
+  };
+
+  // MUTABLE. The bulk mode which is running, or null when none is.
+  let bulkMode = null;
+
+  // MUTABLE. The task bulk mode moves on to when the dialog closes.  It is
+  // worked out while the dialog is open, because the task being dealt with
+  // often leaves the list once it has been dealt with - rescheduling out of
+  // the "Today" view, say - and then there is nothing left to look after.
+  let nextBulkTaskKey = null;
+
+  // MUTABLE. The task bulk mode is on, which is how it notices that the
+  // cursor has been moved to another one.  Not just "wherever the cursor is":
+  // a list which sorts itself moves the task under the cursor around, and
+  // where the walk goes next should not move with it.
+  let bulkTaskKey = null;
+
+  // MUTABLE. The ids of the tasks bulk mode has already put a dialog up for.
+  // A list which sorts itself - the "Upcoming" view, or a project sorted by
+  // date - moves a task as soon as it is rescheduled, and it can land further
+  // down, back in front of the walk.  Those are skipped rather than done
+  // twice.
+  let visitedBulkTaskIds = new Set();
+
+  // MUTABLE. Whether the dialog for the current task has been seen open.  The
+  // dialog not being up yet is otherwise indistinguishable from the user
+  // having finished with it.
+  let bulkDialogSeenOpen = false;
+
+  async function bulkSchedule() {
+    await startBulk(BULK_SCHEDULE);
+  }
+
+  async function bulkMove() {
+    await startBulk(BULK_MOVE);
+  }
+
+  async function switchToBulkMove() {
+    await exitBulk();
+    await bulkMove();
+  }
+
+  async function switchToBulkSchedule() {
+    await exitBulk();
+    await bulkSchedule();
+  }
+
+  async function startBulk(mode) {
+    const cursor = requireCursor();
+    await deselectAllTasks();
+    bulkMode = mode;
+    nextBulkTaskKey = null;
+    bulkTaskKey = null;
+    visitedBulkTaskIds = new Set();
+    bulkDialogSeenOpen = false;
+    updateKeymap();
+    await mode.open(cursor);
+  }
+
+  async function exitBulk() {
+    // Cleared before the dialog is closed, so that closing it doesn't look
+    // like the user finishing with a task and move on to the next one.
+    bulkMode = null;
+    nextBulkTaskKey = null;
+    bulkTaskKey = null;
+    visitedBulkTaskIds = new Set();
+    bulkDialogSeenOpen = false;
+    updateKeymap();
+    await closeContextMenus();
+  }
+
+  // Moves bulk mode on to the task after the one just dealt with.  Bound to
+  // the date keys, since Todoist leaves the scheduler open after one.
+  async function nextBulkTask() {
+    if (bulkMode) {
+      await oneBulkStep();
+    }
+  }
+
+  async function oneBulkStep() {
+    const mode = bulkMode;
+    // Cleared first, so that closing the dialog below - and everything else
+    // which happens before the next one is up - isn't taken for the user
+    // finishing with a task.
+    bulkDialogSeenOpen = false;
+    const task = nextUnvisitedBulkTask();
+    if (!task) {
+      await exitBulk();
+      return;
+    }
+    if (mode.isOpen()) {
+      await closeContextMenus();
+    }
+    setCursor(task, 'scroll');
+    await mode.open(task);
+  }
+
+  // The task to deal with next, or null when the walk is over.
+  //
+  // This starts from the one lined up while the last dialog was open, and
+  // then skips anything already dealt with, which is how a task that the list
+  // has re-sorted down into the walk's path is not done a second time.
+  function nextUnvisitedBulkTask() {
+    if (!nextBulkTaskKey) {
+      debug('Leaving bulk mode, as there is no task after the last one.');
+      return null;
+    }
+    const tasks = getTasks();
+    const from = tasks.findIndex(
+        (task) => getTaskKey(task) === nextBulkTaskKey);
+    if (from < 0) {
+      warn('Leaving bulk mode, as it couldn\'t find', nextBulkTaskKey);
+      return null;
+    }
+    for (let i = from; i < tasks.length; i++) {
+      if (!visitedBulkTaskIds.has(getTaskId(tasks[i]))) {
+        return tasks[i];
+      }
+    }
+    debug('Leaving bulk mode, as everything below has been dealt with.');
+    return null;
+  }
+
+  // Called on every DOM mutation: a dialog which closes on its own is the
+  // user finishing with a task, and is one of the two ways bulk mode
+  // advances.  Closing a dialog from this script always clears
+  // 'bulkDialogSeenOpen' first, so it never counts.
+  function handleBulkModeMutation() {
+    if (!bulkMode) {
+      return;
+    }
+    if (bulkMode.isOpen()) {
+      bulkDialogSeenOpen = true;
+      // Where the walk goes next is read back from the cursor, so that moving
+      // the cursor while the dialog is open takes the walk along.  Only when
+      // the cursor is on a different task, though: a list which sorts itself
+      // moves the task under the cursor as soon as it is rescheduled, and the
+      // tasks it moves past are still ahead of the walk, not behind it.
+      const cursor = getCursor();
+      const key = cursor ? getTaskKey(cursor) : null;
+      if (key && key !== bulkTaskKey) {
+        bulkTaskKey = key;
+        // A dialog being up for a task is what counts as having dealt with
+        // it, which covers the cursor being moved onto one as well as the
+        // walk arriving at it.
+        visitedBulkTaskIds.add(getTaskId(cursor));
+        const next = getNextCursorableTask(getTasks(), key);
+        nextBulkTaskKey = next ? getTaskKey(next) : null;
+      }
+    } else if (bulkDialogSeenOpen) {
+      oneBulkStep();
+    }
+  }
+
+  // Bulk move's keys, which mousetrap never sees: the project picker keeps
+  // focus in its search input so that a project can be typed, and mousetrap
+  // ignores key events from inputs.  Cursor movement therefore needs alt held
+  // down, to leave the unmodified keys for the search.
+  function handleBulkMoveKey(ev) {
+    if (ev.type !== 'keydown' || !ev.altKey || ev.ctrlKey || ev.metaKey) {
+      return true;
+    }
+    if (ev.key === 't') {
+      switchToBulkSchedule();
+      return false;
+    }
+    const cursorMotion = bulkMoveCursorMotion(ev);
+    if (!cursorMotion) {
+      return true;
+    }
+    bulkMoveCursorTo(cursorMotion);
+    return false;
+  }
+
+  function bulkMoveCursorMotion(ev) {
+    switch (ev.key) {
+      case 'j': return cursorDown;
+      case 'k': return cursorUp;
+      case 'h': return cursorLeft;
+      case 'l': return cursorRight;
+      case '^': return cursorFirst;
+      case '$': return cursorLast;
+      case '{': return cursorUpSection;
+      case '}': return cursorDownSection;
+    }
+    switch (ev.keyCode) {
+      case DOWN_ARROW_KEYCODE: return cursorDown;
+      case UP_ARROW_KEYCODE: return cursorUp;
+      case LEFT_ARROW_KEYCODE: return cursorLeft;
+      case RIGHT_ARROW_KEYCODE: return cursorRight;
+    }
+    return null;
+  }
+
+  // Moves the cursor and puts the picker up on the task it lands on.  The
+  // picker has to be closed first, and that close must not be taken for the
+  // user having finished with the task, hence the flag.
+  async function bulkMoveCursorTo(motion) {
+    bulkDialogSeenOpen = false;
+    await closeContextMenus();
+    await motion();
+    const cursor = getCursor();
+    if (cursor) {
+      await BULK_MOVE.open(cursor);
+    }
+  }
+
+  // The project picker has no class or testid of its own any more, so it is
+  // found by the combobox Todoist puts in it.
+  function checkMoveToProjectOpen() {
+    return getUnique(document, '.popper', hasChild(
+        'input[role=combobox][aria-controls^="dropdown-select-"]')) !== null;
+  }
 
   /*****************************************************************************
    * Utilities for manipulating the UI
@@ -1638,21 +2103,6 @@
         controlClickTask(task);
       }
     }
-
-    /* Old definition before hacks to fix Todoist behavioral regressions (#281)
-
-    const allTasks = getTasks('include-collapsed');
-    for (const task of allTasks) {
-      const key = getTaskKey(task);
-      setTimeout(() => {
-        if (selections[key]) {
-          selectTask(task);
-        } else {
-          deselectTask(task);
-        }
-      });
-    }
-    */
   }
 
   function getSelectedTasksOrCursor() {
@@ -1815,7 +2265,9 @@
             tasks.findIndex((task) => task.classList.contains('manager'));
       debug('there is an active editor, with index', managerIndex);
       if (managerIndex > 0) {
-        storeImplicitEditingContext(tasks[managerIndex - 1], true);
+        // The index is the same in the list without editors, since the editor
+        // follows the task being stored.
+        storeImplicitEditingContext(tasks[managerIndex - 1], managerIndex - 1);
       } else if (managerIndex < 0) {
         error('There seems to be a task editor, but then couldn\'t find it.');
       }
@@ -1895,7 +2347,10 @@
             }
           }
         } else {
-          warn('expected to find task that was being edited.');
+          // Todoist replaces the task's element when the edit is saved, so it
+          // can be absent while the list re-renders. Falling back on the
+          // index below lands in the same place.
+          debug('task that preceded the editor is gone, using its index.');
         }
       } else if (lastCursorType === TYPE_EXPLICIT_EDITING) {
         const task =
@@ -2091,8 +2546,15 @@
       if (!initializing) {
         updateViewMode();
       }
+      // Before the filtering below, since a dialog closing is bulk mode's cue
+      // to move on and must not be missed.
+      handleBulkModeMutation();
       if (dragInProgress) {
         debug('ignoring mutations since drag is in progress:', mutations);
+        return;
+      }
+      if (checkDragSettling()) {
+        debug('ignoring mutations while task list settles after drag');
         return;
       }
       // Ignore mutations from toggl-button extension
@@ -2130,6 +2592,10 @@
       }
       if (getCurrentFocusedMenuListItem()) {
         switchKeymap(MENU_LIST_KEYMAP);
+        return;
+      }
+      if (bulkMode) {
+        switchKeymap(bulkMode.keymap);
         return;
       }
       if (checkSchedulerOpen()) {
@@ -2177,19 +2643,6 @@
     return onDisable(() => {
       observer.disconnect();
     });
-  }
-
-  // For some reason todoist clears the selections even after applying things
-  // like priority changes. This restores the selections.
-  //
-  // eslint-disable-next-line no-unused-vars
-  async function withRestoredSelections(f) {
-    const oldSelections = getSelectedTaskKeys();
-    try {
-      f();
-    } finally {
-      await setSelections(oldSelections);
-    }
   }
 
   function openMoreMenu() {
@@ -2266,7 +2719,7 @@
   }
 
   async function withTaskMenuOpenImpl(task, f) {
-    await withTaskHovered(task, async () => {
+    await withHovered(task, async () => {
       const query = 'button[data-action-hint="task-overflow-menu"]';
       const openMenu = await getUniqueRetrying(task, query);
       click(openMenu);
@@ -2291,44 +2744,15 @@
     }
   }
 
-  // Simulate a key press with todoist's global handlers.
-  // eslint-disable-next-line no-unused-vars
-  function todoistShortcut(options0) {
-    const options = typeof options0 === 'string' ? {key: options0} : options0;
-    let ev = new Event('keydown');
-    for (const o in options) {
-      ev[o] = options[o];
-    }
-    if (window.originalTodoistKeydown) {
-      window.originalTodoistKeydown.apply(document, [ev]);
-    }
-    ev = new Event('keyup');
-    for (o in options) {
-      ev[o] = options[o];
-    }
-    if (window.originalTodoistKeyup) {
-      window.originalTodoistKeyup.apply(document, [ev]);
-    }
-    ev = new Event('keypress');
-    for (o in options) {
-      ev[o] = options[o];
-    }
-    if (window.originalTodoistKeypress) {
-      window.originalTodoistKeypress.apply(document, [ev]);
-    }
-  }
-
   // Indent task.
-  function moveIn() {
+  async function moveIn() {
     if (viewMode === 'agenda') {
       info('Indenting task does not work in agenda mode.');
     } else if (viewMode === 'project') {
       const cursor = requireCursor();
-      dragTaskOver(cursor, () => ({
+      await dragTaskOver(cursor, () => ({
         destination: cursor,
-        horizontalOffset: 35,
-        verticalOffset: 0,
-        isBelow: false,
+        indentDelta: 35,
       }));
     } else {
       error('Unexpected viewMode:', viewMode);
@@ -2336,7 +2760,7 @@
   }
 
   // Dedent task.
-  function moveOut() {
+  async function moveOut() {
     if (viewMode === 'agenda') {
       info('Dedenting task does not work in agenda mode.');
     } else if (viewMode === 'project') {
@@ -2345,11 +2769,9 @@
         // See https://github.com/mgsloan/todoist-shortcuts/issues/39
         info('Task is already at indent level 1, so not dedenting');
       } else {
-        dragTaskOver(cursor, () => ({
+        await dragTaskOver(cursor, () => ({
           destination: cursor,
-          horizontalOffset: -35,
-          verticalOffset: 0,
-          isBelow: false,
+          indentDelta: -35,
         }));
       }
     } else {
@@ -2359,7 +2781,7 @@
 
   // Move task up, maintaining its indent level and not swizzling any nested
   // structures.
-  function moveUp() {
+  async function moveUp() {
     if (suppressDrag) {
       info('Not executing drag because one already happened quite recently.');
     } else {
@@ -2371,7 +2793,7 @@
       // Collapse nested tasks before moving it - see
       // https://github.com/mgsloan/todoist-shortcuts/issues/29#issuecomment-426121307
       collapse(cursor);
-      dragTaskOver(cursor, () => {
+      await dragTaskOver(cursor, () => {
         const tasks =
               getTasks('no-collapsed', 'no-editors', 'include-sections');
         const cursorIndex = tasks.indexOf(cursor);
@@ -2387,8 +2809,7 @@
             return {
               destination: task,
               horizontalOffset: 0,
-              verticalOffset: isSectionLi(task) ? 0 : -10,
-              isBelow: isSectionLi(task) ? true : false,
+              dropPosition: isSectionLi(task) ? 'after-section' : 'before',
             };
           } else if (indent < cursorIndent) {
             info('Refusing to dedent task to move it up.');
@@ -2403,7 +2824,7 @@
 
   // Move task down, maintaining its indent level and not swizzling any nested
   // structures.
-  function moveDown() {
+  async function moveDown() {
     if (suppressDrag) {
       info('Not executing drag because one already happened quite recently.');
     } else {
@@ -2415,7 +2836,7 @@
       // Collapse nested tasks before moving it - see
       // https://github.com/mgsloan/todoist-shortcuts/issues/29#issuecomment-426121307
       collapse(cursor);
-      dragTaskOver(cursor, () => {
+      await dragTaskOver(cursor, () => {
         const tasks =
               getTasks('no-collapsed', 'no-editors', 'include-sections');
         const cursorIndex = tasks.indexOf(cursor);
@@ -2455,9 +2876,8 @@
           return {
             destination: lastQualifyingTask,
             horizontalOffset: 0,
-            verticalOffset: -cursor.clientHeight +
-              (isSectionLi(lastQualifyingTask) ? 40 : 0),
-            isBelow: isSectionLi(lastQualifyingTask) ? false : true,
+            dropPosition: isSectionLi(lastQualifyingTask) ?
+              'after-section' : 'after',
           };
         } else {
           info('Couldn\'t find task below cursor to move it below.');
@@ -2519,6 +2939,18 @@
   let dragInProgress = false;
   let suppressDrag = false;
 
+  // Todoist now lazily renders the drag handle, so we try a few selectors
+  // after forcing the task row into its hovered state.
+  const DRAG_HANDLE_SELECTORS = [
+    '.item_dnd_handle',
+    '[data-testid="task-drag-handle"]',
+    '.drag_and_drop_handle',
+    'button.task_list_item__drag_handle',
+    'span.drag_and_drop_handler',
+    '[aria-label="Drag"]',
+    '[aria-roledescription="sortable"]',
+  ];
+
   function dragStart() {
     dragInProgress = true;
     suppressDrag = true;
@@ -2532,43 +2964,135 @@
       suppressDrag = false;
     }, 0);
     restoreScroll();
-    ensureCursor();
-    const cursor = getCursor();
-    if (cursor) {
-      scrollTaskIntoView(cursor);
-    }
-    updateCursorStyle();
+    // Don't reconcile the cursor yet - the task list is still changing.
+    startDragSettling();
     if (!task || task.classList.contains('on_drag')) {
       warn('didn\'t find spot to drop for drag and drop, so cancelling');
       closeContextMenus();
     }
   }
 
-  function dragTaskOver(sourceTask, findDestination) {
-    const sourceY = clientOffset(sourceTask).y;
+  // Todoist applies a drop asynchronously, re-rendering the task list a few
+  // times as the change is applied and synced. While that happens the dragged
+  // task's element is briefly absent from the list, which looks to
+  // 'ensureCursor' like the task was deleted - it then moves the cursor to the
+  // task which took its place. So instead of reconciling the cursor at mouseup,
+  // wait for the task list to stop changing, and reconcile once. See #248.
+  const DRAG_SETTLE_QUIET_MILLIS = 150;
+  const DRAG_SETTLE_MAX_MILLIS = 1500;
+
+  // MUTABLE. Non-null while waiting for the task list to settle after a drag.
+  let dragSettleTimeout = null;
+  let dragSettleDeadline = 0;
+
+  function startDragSettling() {
+    dragSettleDeadline = Date.now() + DRAG_SETTLE_MAX_MILLIS;
+    deferDragSettled();
+  }
+
+  function deferDragSettled() {
+    if (dragSettleTimeout !== null) {
+      clearTimeout(dragSettleTimeout);
+    }
+    dragSettleTimeout = setTimeout(dragSettled, DRAG_SETTLE_QUIET_MILLIS);
+  }
+
+  function dragSettled() {
+    dragSettleTimeout = null;
+    if (dragInProgress) {
+      // Another drag started while waiting - it will start the wait again when
+      // it finishes.
+      debug('not reconciling cursor yet, another drag is in progress');
+      return;
+    }
+    debug('task list settled after drag, so reconciling cursor');
+    ensureCursor();
+    const cursor = getCursor();
+    if (cursor) {
+      scrollTaskIntoView(cursor);
+    }
+    updateCursorStyle();
+    updateKeymap();
+  }
+
+  // Returns true if mutations should be ignored because the task list is still
+  // settling after a drag. Every mutation postpones the reconciliation, up
+  // until a deadline, so that a page which never stops changing can't stop the
+  // cursor from being updated entirely.
+  function checkDragSettling() {
+    if (dragSettleTimeout === null) {
+      return false;
+    }
+    if (Date.now() > dragSettleDeadline) {
+      debug('task list still changing after drag, so no longer waiting');
+      clearTimeout(dragSettleTimeout);
+      dragSettled();
+      return false;
+    }
+    deferDragSettled();
+    return true;
+  }
+
+  function getTaskDropPointY(task, dropPosition) {
+    const bounds = task.getBoundingClientRect();
+    const centerY = bounds.y + bounds.height / 2;
+    const overshoot = Math.max(4, Math.min(12, bounds.height * 0.2));
+
+    if (dropPosition === 'before') {
+      return centerY - overshoot;
+    } else if (dropPosition === 'after') {
+      return centerY + overshoot;
+    } else if (dropPosition === 'after-section') {
+      return bounds.bottom + 8;
+    }
+
+    return centerY;
+  }
+
+  async function dragTaskOver(sourceTask, findDestination) {
     if (suppressDrag) {
       info('Not executing drag because one already happened quite recently.');
     } else {
       try {
         dragStart();
         const result = findDestination();
-        withDragHandle(sourceTask, (el, x, y) => {
+        await withDragHandle(sourceTask, async (el, x, y) => {
           if (result) {
-            const deltaX = result.horizontalOffset;
-            let deltaY =
-                clientOffset(result.destination).y - sourceY +
-                result.verticalOffset;
-            if (result.isBelow) {
-              deltaY += result.destination.clientHeight;
+            // Indent / dedent: a purely horizontal move never passes Todoist's
+            // drag activation threshold, so it needs its own gesture that first
+            // nudges vertically to activate the drag, then sweeps horizontally
+            // to change indent without a net vertical move (so no reorder).
+            if (typeof result.indentDelta === 'number') {
+              await animateIndentDrag(el, x, y, result.indentDelta);
+              dragDone(sourceTask);
+              return;
             }
-            animateDrag(el, x, y, x + deltaX, y + deltaY,
-                () => {
-                  dragDone(sourceTask);
-                });
+
+            const deltaX = result.horizontalOffset;
+            let deltaY = 0;
+
+            if (result.dropPosition) {
+              deltaY = getTaskDropPointY(
+                  result.destination, result.dropPosition) - y;
+            } else {
+              const sourceBounds = sourceTask.getBoundingClientRect();
+              const handleOffsetY = y - sourceBounds.y;
+              let targetY = clientOffset(result.destination).y + handleOffsetY +
+                  result.verticalOffset;
+              if (result.isBelow) {
+                targetY += result.destination.clientHeight;
+              }
+              deltaY = targetY - y;
+            }
+
+            await animateDrag(el, x, y, x + deltaX, y + deltaY);
+            dragDone(sourceTask);
           } else {
             dragDone(sourceTask);
           }
-        }, dragDone);
+        }, () => {
+          dragDone(sourceTask);
+        });
       } catch (ex) {
         dragDone(sourceTask);
         throw ex;
@@ -2576,55 +3100,135 @@
     }
   }
 
-  function withDragHandle(task, f, finished) {
-    const key = getTaskKey(task);
-    task.dispatchEvent(new Event('mouseover'));
-    try {
-      const handler = getUnique(task, '.item_dnd_handle');
-      if (handler) {
-        const handlerOffset = clientOffset(handler);
-        const x = handlerOffset.x + handler.offsetWidth/2 - window.scrollX - 3;
-        const y = handlerOffset.y + handler.offsetHeight/2 - window.scrollY - 4;
-        f(handler, x, y);
-      } else {
-        // FIXME: Sometimes this triggers, particularly when move up / move
-        // down key is held down with repeat.  Tried some hacks to resolve,
-        // but nothing seems to work well.
-        info('Couldn\'t find item_dnd_handle.');
-        finished();
-      }
-    } finally {
-      withTaskByKey(key, (el) => {
-        el.dispatchEvent(new Event('mouseout'));
-      });
+  function dispatchPointerEvent(el, type, params) {
+    if (typeof PointerEvent === 'function') {
+      el.dispatchEvent(new PointerEvent(type, Object.assign({}, params, {
+        pointerId: 1,
+      })));
     }
   }
 
-  function animateDrag(el, sx, sy, tx, ty, finished) {
-    const startParams = mkMouseParams(sx, sy);
-    el.dispatchEvent(new MouseEvent('mousedown', startParams));
-    const duration = 50;
-    const frameCount = 10;
-    let currentFrame = 0;
-    // NOTE: Animating this may seem overkill, but doing a direct move didn't
-    // work reliably.  This also makes it clearer what's happening.
-    const dragLoop = () => {
-      const alpha = currentFrame / frameCount;
-      currentFrame++;
-      if (alpha >= 1) {
-        const params = mkMouseParams(tx, ty);
-        el.dispatchEvent(new MouseEvent('mousemove', params));
-        el.dispatchEvent(new MouseEvent('mouseup', params));
-        finished();
-      } else {
-        const x = overshootCoslerp(sx, tx, alpha, 0.3, 1.5);
-        const y = overshootCoslerp(sy, ty, alpha, 0.3, 1.5);
-        params = mkMouseParams(x, y);
-        el.dispatchEvent(new MouseEvent('mousemove', params));
-        setTimeout(dragLoop, duration / frameCount);
+  function hoverTaskForDrag(task) {
+    const hoverParams = {bubbles: true, cancelable: true};
+    task.dispatchEvent(new MouseEvent('mouseover', hoverParams));
+    dispatchPointerEvent(task, 'pointerover', hoverParams);
+    dispatchPointerEvent(task, 'pointerenter', hoverParams);
+  }
+
+  async function findDragHandle(task) {
+    for (let i = 0; i < 5; i++) {
+      for (const selector of DRAG_HANDLE_SELECTORS) {
+        const handler = task.querySelector(selector);
+        if (handler) {
+          return handler;
+        }
       }
-    };
-    setTimeout(dragLoop, duration / frameCount);
+      await sleep(10);
+    }
+    return null;
+  }
+
+  async function withDragHandle(task, f, finished) {
+    const key = getTaskKey(task);
+    let currentTask = getTaskByKey(key) || task;
+    hoverTaskForDrag(currentTask);
+    try {
+      await sleep(20);
+      currentTask = getTaskByKey(key) || currentTask;
+      const handler = await findDragHandle(currentTask);
+      if (handler) {
+        const bounds = handler.getBoundingClientRect();
+        const x = bounds.x + bounds.width / 2;
+        const y = bounds.y + bounds.height / 2;
+        await f(handler, x, y);
+      } else {
+        info('Couldn\'t find a drag handle after hovering the task.');
+        finished();
+      }
+    } finally {
+      currentTask = getTaskByKey(key) || currentTask;
+      if (currentTask) {
+        dispatchPointerEvent(currentTask, 'pointerout', {bubbles: true});
+        currentTask.dispatchEvent(new MouseEvent('mouseout', {bubbles: true}));
+      }
+    }
+  }
+
+  // Todoist listens for both pointer and mouse events, so synthetic drags need
+  // to dispatch both.
+  function pressPointer(el, x, y) {
+    const params = mkMouseParams(x, y);
+    dispatchPointerEvent(el, 'pointerdown', params);
+    el.dispatchEvent(new MouseEvent('mousedown', params));
+  }
+
+  function movePointer(el, x, y) {
+    const params = mkMouseParams(x, y);
+    dispatchPointerEvent(el, 'pointermove', params);
+    el.dispatchEvent(new MouseEvent('mousemove', params));
+  }
+
+  function releasePointer(el, x, y) {
+    const params = mkMouseParams(x, y);
+    dispatchPointerEvent(el, 'pointerup', params);
+    el.dispatchEvent(new MouseEvent('mouseup', params));
+  }
+
+  async function animateDrag(el, sx, sy, tx, ty) {
+    pressPointer(el, sx, sy);
+    await sleep(10);
+
+    const initialOffset = ty > sy ? 2 : -2;
+    movePointer(el, sx, sy + initialOffset);
+    await sleep(10);
+
+    const duration = 75;
+    const frameCount = 15;
+    // Keep the animated drag because Todoist is sensitive to abrupt jumps.
+    for (let currentFrame = 1; currentFrame <= frameCount; currentFrame++) {
+      const alpha = currentFrame / frameCount;
+      const x = overshootCoslerp(sx, tx, alpha, 0.3, 1.5);
+      const y = overshootCoslerp(sy, ty, alpha, 0.3, 1.5);
+      movePointer(el, x, y);
+      await sleep(duration / frameCount);
+    }
+
+    movePointer(el, tx, ty);
+    releasePointer(el, tx, ty);
+  }
+
+  // Drag gesture for indent / dedent. Unlike a reorder, this must NOT move the
+  // task to a new row: it activates the drag with a vertical nudge, sweeps the
+  // pointer horizontally (Todoist maps horizontal position to indent level and
+  // clamps to the nearest legal level), then settles back near the original row
+  // so the drop only changes indent.  See #248.
+  async function animateIndentDrag(el, sx, sy, deltaX) {
+    pressPointer(el, sx, sy);
+    await sleep(10);
+
+    // Activate: nudge downward past the drag threshold, staying within the
+    // task's own row so no reorder is triggered.
+    for (let dy = 3; dy <= 12; dy += 3) {
+      movePointer(el, sx, sy + dy);
+      await sleep(20);
+    }
+
+    // Sweep horizontally at a small vertical hold so the indent updates but the
+    // task stays put.
+    const holdY = sy + 6;
+    const frameCount = 12;
+    for (let currentFrame = 1; currentFrame <= frameCount; currentFrame++) {
+      const x = coslerp(sx, sx + deltaX, currentFrame / frameCount);
+      movePointer(el, x, holdY);
+      await sleep(15);
+    }
+
+    // Settle back toward the original row and drop.
+    const endX = sx + deltaX;
+    const endY = sy + 2;
+    movePointer(el, endX, endY);
+    await sleep(10);
+    releasePointer(el, endX, endY);
   }
 
   function lerp(s, e, t) {
@@ -2650,6 +3254,7 @@
   function mkMouseParams(x, y) {
     return {
       bubbles: true,
+      cancelable: true,
       screenX: x,
       screenY: y,
       clientX: x,
@@ -2675,27 +3280,34 @@
   }
 
   async function clickTaskSchedule(task) {
-    await withTaskHovered(task, async () => {
+    await withHovered(task, async () => {
       await clickUniqueRetrying(task, '[data-action-hint="task-scheduler"]');
     });
   }
 
-  async function withTaskHovered(task, f) {
+  // Task rows and left nav rows only render their buttons while hovered, so
+  // anything which clicks one has to pretend the mouse is over the row.
+  async function withHovered(el, f) {
     const eventOptions = {
       bubbles: true,
       cancelable: true,
       view: window,
       button: 0,
     };
-    task.dispatchEvent(new MouseEvent('mouseover', eventOptions));
+    el.dispatchEvent(new MouseEvent('mouseover', eventOptions));
     try {
       await f();
     } finally {
-      task.dispatchEvent(new MouseEvent('mouseout', eventOptions));
+      el.dispatchEvent(new MouseEvent('mouseout', eventOptions));
     }
   }
 
   async function blurSchedulerInput() {
+    // A keeper left over from a scheduler which has just been closed and
+    // reopened - as bulk schedule mode does - blurs the new scheduler's input
+    // the moment it is focused, so waiting for that focus below would wait
+    // forever.  One is installed again at the end.
+    stopKeepingSchedulerInputBlurred();
     enterDeferLastBinding();
     await sleep(IS_SAFARI ? 20 : 0);
     try {
@@ -2709,18 +3321,72 @@
           },
       );
       focusedEl.blur();
+      keepSchedulerInputBlurred();
     } finally {
       exitDeferLastBinding();
     }
   }
 
+  // Cancels the current keepSchedulerInputBlurred, if any. MUTABLE.
+  let cancelSchedulerBlur = null;
+
+  // Todoist focuses the scheduler's text input when the scheduler opens, and
+  // focuses it again whenever it is blurred. While it has focus the schedule
+  // shortcuts are typed into it rather than run, so keep blurring it for as
+  // long as the scheduler is open.
+  //
+  // Clicking into the field is how to type a date instead, so a click there
+  // gives up and lets it keep focus. So does `shift+t`, via focusTimeInput
+  // and scheduleText.
+  function keepSchedulerInputBlurred() {
+    stopKeepingSchedulerInputBlurred();
+    const blurSchedulerFocus = (ev) => {
+      if (!findScheduler()) {
+        stopKeepingSchedulerInputBlurred();
+        return;
+      }
+      const el = ev.target;
+      if (el && el.blur && findParent(el, matchingClass('scheduler'))) {
+        el.blur();
+      }
+    };
+    const giveUpIfClicked = (ev) => {
+      if (ev.isTrusted && findParent(ev.target, matchingClass('scheduler'))) {
+        stopKeepingSchedulerInputBlurred();
+      }
+    };
+    document.addEventListener('focusin', blurSchedulerFocus, {capture: true});
+    document.addEventListener('pointerdown', giveUpIfClicked, {capture: true});
+    cancelSchedulerBlur = () => {
+      document.removeEventListener(
+          'focusin', blurSchedulerFocus, {capture: true});
+      document.removeEventListener(
+          'pointerdown', giveUpIfClicked, {capture: true});
+    };
+  }
+
+  function stopKeepingSchedulerInputBlurred() {
+    if (cancelSchedulerBlur) {
+      cancelSchedulerBlur();
+      cancelSchedulerBlur = null;
+    }
+  }
+
+  // Todoist used to give the time input an id and now generates one, leaving
+  // its label as the way to find it.
+  function findTimeInput() {
+    return getById('scheduler-timepicker-input-element') ||
+        getUnique(document, '.scheduler input[aria-label="Start time"]');
+  }
+
   async function focusTimeInput() {
+    // Otherwise the time input is blurred right back again when the scheduler
+    // was only just opened.
+    stopKeepingSchedulerInputBlurred();
     enterDeferLastBinding();
     try {
-      const timepicker = await retryWithDelay(
-          'finding time input',
-          () => getById('scheduler-timepicker-input-element'),
-      );
+      const timepicker = await retryWithDelay('finding time input',
+          findTimeInput);
       timepicker.focus();
     } finally {
       exitDeferLastBinding();
@@ -2759,7 +3425,10 @@
           closeContextMenus();
         }
       });
-      const editor = await getUniqueRetrying(document, '.task_editor');
+      // Retrying rather than getUniqueRetrying, so that not finding the editor
+      // falls back on adding to the section instead of throwing.
+      const editor = await retryWithDelay(
+          'finding task editor', findTaskEditor).catch(() => null);
       if (editor) {
         scrollTaskEditorIntoView();
       } else {
@@ -2851,14 +3520,54 @@
 
   async function clickPriorityMenu(menu, level) {
     await clickUniqueRetrying(
-        menu, 'li', matchingAction('task-actions-priority-' + level));
+        menu, '[data-action-hint="task-actions-priority-' + level + '"]');
   }
 
-  // eslint-disable-next-line no-unused-vars
-  function notifyRecommendOldUi(msg) {
-    notifyUser(msg +
-        ' You may be able to fix this via Settings -> Advanced -> ' +
-        'uncheck "Experimental features"');
+  // Shows the announcement, if this browser hasn't been shown it already.
+  //
+  // Local storage is what remembers it, so it is once per browser rather than
+  // once per account or per install.  Reading and writing it are both allowed
+  // to fail - private windows and blocked storage throw - in which case the
+  // announcement is skipped rather than shown over and over.
+  function showAnnouncementOnce() {
+    if (!ANNOUNCEMENT_TEXT) {
+      return;
+    }
+    let seen = null;
+    try {
+      seen = window.localStorage.getItem(ANNOUNCEMENT_SEEN_KEY);
+    } catch (e) {
+      warn('Couldn\'t tell whether the announcement has been shown:', e);
+      return;
+    }
+    if (seen === ANNOUNCEMENT_ID) {
+      return;
+    }
+    try {
+      window.localStorage.setItem(ANNOUNCEMENT_SEEN_KEY, ANNOUNCEMENT_ID);
+    } catch (e) {
+      warn('Couldn\'t remember showing the announcement, so not showing it:',
+          e);
+      return;
+    }
+    const changelog = element('a', null, text('changelog'));
+    changelog.setAttribute(
+        'href', TODOIST_SHORTCUTS_GITHUB + '/blob/master/changelog.md');
+    changelog.setAttribute('target', '_blank');
+    notifyUser(
+        span(null, text(ANNOUNCEMENT_TEXT + ' '), changelog, text('.')));
+  }
+
+  // Fall back to a bundled close icon when Todoist doesn't expose its SVG map.
+  function getCloseIconHtml() {
+    if (window.svgs && window.svgs['sm1/close_small.svg']) {
+      return window.svgs['sm1/close_small.svg'];
+    }
+    return '<svg aria-hidden="true" viewBox="0 0 24 24" width="16" ' +
+        'height="16"><path fill="currentColor" d="M18.3 5.71a1 1 0 ' +
+        '0 0-1.41 0L12 10.59 7.11 5.7A1 1 0 0 0 5.7 7.12L10.59 12l-4.9 ' +
+        '4.89a1 1 0 0 0 1.42 1.41L12 13.41l4.89 4.9a1 1 0 0 0 ' +
+        '1.41-1.42L13.41 12l4.9-4.89a1 1 0 0 0-.01-1.4z"></path></svg>';
   }
 
   function notifyUser(msg) {
@@ -2867,7 +3576,7 @@
         appHolder.removeChild(oldNote);
       });
       const close = div('ts-note-close');
-      close.innerHTML = svgs['sm1/close_small.svg'];
+      close.innerHTML = getCloseIconHtml();
       const note =
           div('ts-note',
               div('ts-note-content',
@@ -2889,7 +3598,7 @@
     let modal;
     withId('todoist_app', (appHolder) => {
       const close = div('ts-modal-close');
-      close.innerHTML = svgs['sm1/close_small.svg'];
+      close.innerHTML = getCloseIconHtml();
       const content = div(
           'ts-modal-content',
         typeof msg === 'string' ? text(msg) : msg,
@@ -3026,18 +3735,6 @@
     }
   }
 
-  // eslint-disable-next-line no-unused-vars
-  function makeTaskKey(id, indent) {
-    if (viewMode === 'agenda') {
-      return id + ' ' + indent;
-    } else if (viewMode === 'project') {
-      return id;
-    } else {
-      error('Unexpected viewMode:', viewMode);
-      return null;
-    }
-  }
-
   function checkTaskIsSelected(task) {
     return task.classList.contains('selected') || task.ariaSelected === 'true';
   }
@@ -3066,20 +3763,15 @@
   }
   */
 
+  // Todoist used to put an 'indent_<n>' class on a task and now only has the
+  // attribute, but the class name is still the shape the rest of this works
+  // in - see 'stripIndentClass' - so it is built from the attribute.
   function getIndentClass(task) {
-    // TODO: can probably just use data-item-indent now, seems to
-    // always be available.
-    const indentClass = findUnique(isIndentClass, task.classList);
-    if (indentClass) {
-      return indentClass;
-    } else {
-      const indentAttribute = task.attributes['data-item-indent'];
-      if (indentAttribute) {
-        return 'indent_' + indentAttribute.value;
-      } else {
-        return null;
-      }
+    const indentAttribute = task.attributes['data-item-indent'];
+    if (indentAttribute) {
+      return 'indent_' + indentAttribute.value;
     }
+    return null;
   }
 
   function getIndentLevel(task) {
@@ -3089,10 +3781,6 @@
     } else {
       return 1;
     }
-  }
-
-  function isIndentClass(cls) {
-    return cls.startsWith('indent_');
   }
 
   function stripIndentClass(cls) {
@@ -3141,15 +3829,6 @@
         return '4';
       default:
         throw new Error('Unexpected level');
-    }
-  }
-
-  function withTaskByKey(key, f) {
-    const task = getTaskByKey(key, f);
-    if (task) {
-      f(task);
-    } else {
-      warn('Couldn\'t find task key', key);
     }
   }
 
@@ -3205,8 +3884,6 @@
   }
 
   // Gets the next task the cursor can be moved to, after the specified task.
-  //
-  // eslint-disable-next-line no-unused-vars
   function getNextCursorableTask(tasks, currentKey) {
     for (let i = 0; i < tasks.length; i++) {
       if (getTaskKey(tasks[i]) === currentKey) {
@@ -3888,16 +4565,13 @@
 
   // Remove old tips if any still exist.
   function removeOldTips() {
-    // FIXME: I can't quite explain this, but for some reason, querying the
-    // list that matches the class name doesn't quite work.  So instead find
-    // and remove until they are all gone.
-    let toDelete = [];
-    do {
-      for (const el of toDelete) {
-        el.parentElement.removeChild(el);
-      }
-      toDelete = document.getElementsByClassName(TODOIST_SHORTCUTS_TIP);
-    } while (toDelete.length > 0);
+    // Copied into an array first: 'getElementsByClassName' hands back a live
+    // list, and removing from that while iterating it skips every other
+    // element.  That is what this used to loop until it had worked around.
+    const tips = [...document.getElementsByClassName(TODOIST_SHORTCUTS_TIP)];
+    for (const tip of tips) {
+      tip.remove();
+    }
   }
 
   /*****************************************************************************
@@ -3936,20 +4610,15 @@
   }
 
   function scrollTaskIntoView(task) {
-    const rect = task.getBoundingClientRect();
-    const aboveViewport = rect.top < rect.height;
-    const belowViewport = rect.bottom > window.innerHeight;
-    if (aboveViewport || belowViewport) {
-      task.scrollIntoView({block: 'center', behavior: 'instant'});
-    }
+    verticalScrollIntoView(task, 'center', false);
   }
 
   function scrollTaskToBottom(task) {
-    task.scrollIntoView({block: 'end', behavior: 'instant'});
+    verticalScrollIntoView(task, 'end', true);
   }
 
   function scrollTaskToTop(task) {
-    task.scrollIntoView({block: 'start', behavior: 'instant'});
+    verticalScrollIntoView(task, 'start', true);
   }
 
   // Exception thrown by requireCursor.
@@ -4119,6 +4788,100 @@
     return style;
   }
 
+  // Scrolls the specified element into view, if it isn't already fully
+  // visible. 'align' is scrollIntoView's 'block' option - 'start', 'center',
+  // 'end' or 'nearest'. When 'skipCheck' is set, scrolls even if the element
+  // is already visible.
+  //
+  // The scrolling itself is left to the browser, so that it keeps working as
+  // Todoist shuffles around which element does the scrolling. The scroll
+  // container is located only in order to measure, so getting that wrong now
+  // means imperfect alignment rather than no scrolling at all.
+  function verticalScrollIntoView(el, align, skipCheck) {
+    const content = getScrollContainer(el);
+    if (!content) {
+      warn('Failed to find scroll container for', el);
+    }
+    // Space at the top of the container taken up by sticky headers, which
+    // would otherwise obscure the element.
+    const topInset = content ? getStickyTopInset(content) : 0;
+    if (!skipCheck && content && isFullyVisible(el, content, topInset)) {
+      return;
+    }
+    // The browser has no idea the sticky headers are there, so ask it to keep
+    // clear of them.
+    // MUTABLE: the inline style is restored before returning.
+    const oldScrollMargin = el.style.scrollMarginTop;
+    el.style.scrollMarginTop = topInset + 'px';
+    try {
+      // TODO: for very large tasks, this could end up with the whole task not
+      // being in view.
+      el.scrollIntoView({block: align, behavior: 'instant'});
+    } finally {
+      el.style.scrollMarginTop = oldScrollMargin;
+    }
+  }
+
+  // Whether the element lies entirely within the visible portion of its scroll
+  // container - that is, not counting the part covered by sticky headers.
+  function isFullyVisible(el, content, topInset) {
+    const bounds = el.getBoundingClientRect();
+    const view = content.getBoundingClientRect();
+    return bounds.top >= view.top + topInset && bounds.bottom <= view.bottom;
+  }
+
+  // Finds the nearest ancestor which actually scrolls the element. Todoist has
+  // moved this around over time - it used to be '#content' itself, but is now
+  // a div nested within it.
+  function getScrollContainer(el) {
+    let cur = el ? el.parentElement : null;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      if (isVerticallyScrollable(cur) && hasScrollableOverflow(cur)) {
+        return cur;
+      }
+      cur = cur.parentElement;
+    }
+    // Nothing to scroll (the content fits), but return something sensible so
+    // that positions can still be computed.
+    return getViewContent();
+  }
+
+  function hasScrollableOverflow(el) {
+    const overflowY = window.getComputedStyle(el).overflowY;
+    return overflowY === 'auto' ||
+      overflowY === 'scroll' ||
+      overflowY === 'overlay';
+  }
+
+  // Todoist sticks the view header (and, once scrolled, section headers) to the
+  // top of the scroll container. Returns how much of the top of the container
+  // they cover, by probing downwards from the top for sticky elements.
+  function getStickyTopInset(content) {
+    const bounds = content.getBoundingClientRect();
+    const x = bounds.left + bounds.width / 2;
+    // No sensible answer for tiny / hidden containers.
+    if (bounds.width <= 0 || bounds.height <= 0) {
+      return 0;
+    }
+    let inset = 0;
+    for (let i = 0; i < 3; i++) {
+      const stuck = document.elementsFromPoint(x, bounds.top + inset + 1)
+          .find((el) => el !== content &&
+                content.contains(el) &&
+                window.getComputedStyle(el).position === 'sticky');
+      if (!stuck) {
+        break;
+      }
+      const newInset = stuck.getBoundingClientRect().bottom - bounds.top;
+      // Bail out rather than trust an implausibly large result, which would
+      // mean some big sticky wrapper got mistaken for a header.
+      if (newInset <= inset || newInset > bounds.height / 3) {
+        break;
+      }
+      inset = newInset;
+    }
+    return inset;
+  }
 
   // Alias for document.getElementById
   function getById(id) {
@@ -4128,22 +4891,6 @@
   // Alias for querySelectorAll.
   function selectAll(parent, query) {
     return parent.querySelectorAll(query);
-  }
-
-  async function selectAllRetrying(
-      parent, query, predicate, fuel=100, delay=10) {
-    return await retryWithDelay(
-        'finding descendants matching ' + query,
-        () => {
-          const results = selectAll(parent, query, predicate);
-          if (results.length === 0) {
-            return null;
-          } else {
-            return results;
-          }
-        },
-        fuel,
-        delay);
   }
 
   async function getUniqueRetrying(
@@ -4160,19 +4907,13 @@
     click(await getUniqueRetrying(parent, query, predicate, fuel, delay));
   }
 
-  async function clickAllRetrying(
-      parent, query, predicate, fuel=100, delay=10) {
-    const elements =
-      await selectAllRetrying(parent, query, predicate, fuel, delay);
-    for (const element of elements) {
-      click(element);
-    }
-  }
-
-  // Generic retry with delay between retries - returns a Promise
+  // Generic retry with delay between retries - returns a Promise.  The first
+  // `instantFuel` attempts are only a turn of the event loop apart, so that
+  // something Todoist has already rendered is picked up without a wait; after
+  // those, `fuel` attempts are `delay` apart.
   async function retryWithDelay(
       taskName, task, fuel = 100, delay = 10, instantFuel = 10) {
-    while (instantFuel > 0 && fuel > 0) {
+    while (fuel > 0) {
       const result = task();
       if (result) {
         return result;
@@ -4343,23 +5084,22 @@
     }
   }
 
-  // Simulate a mouse click.
+  // Simulate a mouse click, in the order a real one arrives: pointerdown,
+  // mousedown, pointerup, mouseup, click.
   //
-  // Dispatches the full browser event sequence including PointerEvents.
-  // Todoist's UI (likely Radix UI) uses pointerdown/pointerup for popover
-  // toggle and outside-click dismissal. Without pointer events, popovers
-  // open and immediately auto-close. See:
-  //   https://github.com/mgsloan/todoist-shortcuts/issues/282
-  //   https://github.com/mgsloan/todoist-shortcuts/issues/285
+  // The pointer events matter because Todoist's popover triggers (label menu,
+  // scheduler, project menu) now open from pointerdown rather than click, so a
+  // mouse-only sequence never reaches the handler that opens them.  See
+  // https://github.com/mgsloan/todoist-shortcuts/issues/282 and
+  // https://github.com/mgsloan/todoist-shortcuts/issues/285
   function click(el) {
     const eventOptions = {bubbles: true, cancelable: true, view: window};
-    el.dispatchEvent(new PointerEvent('pointerdown', eventOptions));
+    dispatchPointerEvent(el, 'pointerdown', eventOptions);
     el.dispatchEvent(new MouseEvent('mousedown', eventOptions));
-    el.dispatchEvent(new PointerEvent('pointerup', eventOptions));
+    dispatchPointerEvent(el, 'pointerup', eventOptions);
     el.dispatchEvent(new MouseEvent('mouseup', eventOptions));
     el.dispatchEvent(new MouseEvent('click', eventOptions));
   }
-
 
   function clientOffset(el) {
     const bounds = el.getBoundingClientRect();
@@ -4385,6 +5125,11 @@
     return (el) => el.innerText === text;
   }
 
+  // For menu items which have their keyboard shortcut appended to their text.
+  function startsWithText(text) {
+    return (el) => el.innerText.startsWith(text);
+  }
+
   function matchingAction(action) {
     return matchingAttr('data-action-hint', action);
   }
@@ -4396,33 +5141,9 @@
   }
 
   // Returns predicate which returns 'true' if the element has the
-  // specified class suffix.
-  //
-  // eslint-disable-next-line no-unused-vars
-  function matchingClassSuffix(suffix) {
-    return (el) => {
-      for (let i = 0; i < el.classList.length; i++) {
-        const cl = el.classList.item(i);
-        if (cl.endsWith(suffix)) {
-          return true;
-        }
-      }
-      return false;
-    };
-  }
-
-  // Returns predicate which returns 'true' if the element has the
   // specified tag.
   function matchingTag(tag) {
     return (el) => el.tagName.toLowerCase() === tag;
-  }
-
-  // Returns predicate which returns 'true' if the element has the
-  // specified id.
-  //
-  // eslint-disable-next-line no-unused-vars
-  function matchingId(id) {
-    return (el) => el.id === id;
   }
 
   // Returns predicate which returns 'true' if the element has the
@@ -4778,16 +5499,6 @@
     return getUnique(document, '.upcoming_view') !== null;
   }
 
-  function disabledWithLazyLoading(actionName, f) {
-    if (isUpcomingView()) {
-      warn(actionName, ' disabled in upcoming view, ',
-          'as it doesn\'t work properly due to lazy loading.');
-      return;
-    } else {
-      f();
-    }
-  }
-
   /*****************************************************************************
    * Mousetrap utilities
    */
@@ -4865,7 +5576,8 @@
   function getCurrentFocusedMenuListItem() {
     const item = document.activeElement;
     const parent = item.parentElement;
-    if (parent && parent.classList.contains('item_menu_list')) {
+    if (parent && (parent.classList.contains('item_menu_list') ||
+                   parent.classList.contains('reactist_menulist'))) {
       return item;
     }
     return null;
@@ -4939,6 +5651,22 @@
     return true;
   }
 
+  // Escape is handled here rather than as a keybinding because leaving bulk
+  // mode has to happen before the dialog closes: a dialog closing while bulk
+  // mode is running is what moves it on to the next task.
+  function bulkModeKeyHandler(ev) {
+    if (ev.keyCode === ESCAPE_KEYCODE) {
+      if (ev.type === 'keydown') {
+        exitBulk();
+      }
+      return false;
+    }
+    if (bulkMode === BULK_MOVE) {
+      return handleBulkMoveKey(ev);
+    }
+    return mousetrap.handleKeyEvent(ev);
+  }
+
   function keydownHandler(ev) {
     debug('keydownHandler', ev);
     // In debug mode f12 enters debugger.
@@ -4948,6 +5676,9 @@
     }
     if (todoistModalIsOpen()) {
       return modalKeyHandler(ev);
+    }
+    if (bulkMode) {
+      return bulkModeKeyHandler(ev);
     }
     if (ev.keyCode === ESCAPE_KEYCODE && ev.type === 'keydown') {
       // Workaround for #217
@@ -5014,6 +5745,8 @@
     // Register key bindings with mousetrap.
     registerKeybindings(DEFAULT_KEYMAP, KEY_BINDINGS);
     registerKeybindings(SCHEDULE_KEYMAP, SCHEDULE_BINDINGS);
+    registerKeybindings(BULK_SCHEDULE_KEYMAP, BULK_SCHEDULE_BINDINGS);
+    registerKeybindings(BULK_MOVE_KEYMAP, BULK_MOVE_BINDINGS);
     registerKeybindings(NAVIGATE_KEYMAP, NAVIGATE_BINDINGS);
     registerKeybindings(POPUP_KEYMAP, POPUP_BINDINGS);
     registerKeybindings(TASK_VIEW_KEYMAP, TASK_VIEW_BINDINGS);
@@ -5041,6 +5774,11 @@
     onDisable(() => {
       window.removeEventListener('focus', handleWindowFocus);
     });
+
+    // After a moment, so that the notice isn't put up into a page which is
+    // still settling and then scrolled away from.
+    const announcement = setTimeout(showAnnouncementOnce, ANNOUNCEMENT_DELAY);
+    onDisable(() => clearTimeout(announcement));
 
     initializing = false;
   }
