@@ -17,7 +17,10 @@
 #      private key. Xcode > Settings > Accounts > Manage Certificates > "+" >
 #      Developer ID Application. An "Apple Development" certificate is NOT
 #      sufficient — that one only signs for local development.
-#   3. A notarytool credential profile:
+#   3. If running remotely: sign from a session attached to the logged-in
+#      desktop, or unlock the login keychain first. Preflight tests this
+#      before doing several minutes of work.
+#   4. A notarytool credential profile:
 #        xcrun notarytool store-credentials todoiste \
 #          --key /path/to/AuthKey_XXXXXXXXXX.p8 \
 #          --key-id XXXXXXXXXX \
@@ -89,6 +92,45 @@ if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>
   die "No notarytool credential profile '$NOTARY_PROFILE'. See the setup notes at the top of this script."
 fi
 echo "  notary:   profile '$NOTARY_PROFILE' OK"
+
+# Signing smoke test. Over SSH, or with a locked keychain, codesign fails with
+# "User interaction is not allowed" only once the real build is done — several
+# minutes in. Fail here instead, with the fix.
+SMOKE=$(mktemp -d)/probe
+cp /bin/echo "$SMOKE"
+if ! codesign --force --sign "$IDENTITY" "$SMOKE" >/dev/null 2>"$SMOKE.err"; then
+  if grep -qiE 'user interaction is not allowed|errSecInternalComponent' "$SMOKE.err"; then
+    cat >&2 <<MSG
+
+ERROR: codesign cannot reach the signing key in this session.
+
+  This is the usual failure when releasing over SSH: the login keychain is
+  locked, or the private key's ACL does not permit non-interactive signing.
+
+  Best fix — run this script from a session attached to the logged-in desktop
+  (Screen Sharing, or a Claude Code session running in the GUI session) where
+  the login keychain is already unlocked.
+
+  Over SSH, unlock it first:
+      security unlock-keychain ~/Library/Keychains/login.keychain-db
+
+  If it still fails, the key's ACL needs to allow codesign non-interactively.
+  This prompts for the keychain password and only needs doing once:
+      security set-key-partition-list -S apple-tool:,apple:,codesign: \\
+        -s -k <keychain-password> ~/Library/Keychains/login.keychain-db
+
+  codesign said:
+$(sed 's/^/      /' "$SMOKE.err")
+MSG
+  else
+    printf '\nERROR: test signature failed with identity "%s":\n' "$IDENTITY" >&2
+    sed 's/^/  /' "$SMOKE.err" >&2
+  fi
+  rm -rf "$(dirname "$SMOKE")"
+  exit 1
+fi
+rm -rf "$(dirname "$SMOKE")"
+echo "  signing:  test signature OK"
 
 # ---------------------------------------------------------------- build
 
