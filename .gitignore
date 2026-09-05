@@ -16,6 +16,10 @@ DerivedData/
 ## macOS
 .DS_Store
 
+## Dropbox conflict artifacts — this tree is synced and built on two Macs
+*conflicted copy*
+build [0-9]*/
+
 ## Agent config (local only — generated from docs/DEVELOPMENT.md)
 AGENTS.md
 CLAUDE.md
