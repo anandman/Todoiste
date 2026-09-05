@@ -10,6 +10,22 @@ Todoiste wraps Todoist's web app in a lightweight WKWebView and injects the todo
 
 Todoist's official Mac app doesn't support the todoist-shortcuts extension. Using it in Chrome works, but the tab lives among dozens of others and doesn't feel like a standalone app. Browser-to-app wrappers like Coherence X get close but have quirks. Todoiste is ~100 lines of Swift that gives you the real thing.
 
+## Installing
+
+There are no prebuilt releases yet — build from source (below). To install the
+built app so it shows up in Spotlight and the Dock:
+
+```bash
+xcodegen generate   # see Building below if you don't have xcodegen
+xcodebuild -project Todoiste.xcodeproj -scheme Todoiste -configuration Release \
+  -derivedDataPath build build
+rm -rf /Applications/Todoiste.app
+ditto build/Build/Products/Release/Todoiste.app /Applications/Todoiste.app
+```
+
+`/Applications/Todoiste.app` is a copy, so rerun those last two lines after any
+change to the Swift source — building in Xcode alone will not update it.
+
 ## Building
 
 ### Prerequisites
@@ -26,6 +42,15 @@ cd Todoiste
 xcodegen generate
 open Todoiste.xcodeproj
 # Cmd+R to build and run
+```
+
+Or from the command line:
+
+```bash
+xcodegen generate
+xcodebuild -project Todoiste.xcodeproj -scheme Todoiste -configuration Debug \
+  -derivedDataPath build build
+open build/Build/Products/Debug/Todoiste.app
 ```
 
 ### Without xcodegen (building from scratch, not from a clone)
@@ -50,7 +75,8 @@ Todoiste does the same injection natively via `WKWebView`:
 3. Keep OAuth flows in-app; open external links in default browser
 4. Bridge web notifications to native macOS notifications
 
-Detailed implementation notes (script ordering, bridge behavior, caveats) are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+All of it lives in `Todoiste/WebView.swift` — navigation policy, script injection, and the
+notification bridge are each a short, commented section there.
 
 ## Keyboard Shortcuts
 
