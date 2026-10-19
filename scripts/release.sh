@@ -2,10 +2,9 @@
 #
 # Build, sign, notarize, staple, and publish a Todoiste release from this Mac.
 #
-# Signing and notarizing locally keeps the Developer ID certificate off GitHub
-# entirely — no signing secrets in Actions. The result is a DMG that opens with
-# no Gatekeeper prompt at all, rather than the "unidentified developer" warning
-# an ad-hoc build produces.
+# Local alternative to the repository's signed/notarized Actions flow.
+# Credentials come from this Mac's keychain; Actions uses repository environment
+# secrets. Both paths publish a Developer ID signed, notarized DMG.
 #
 # Usage:
 #   ./scripts/release.sh              # version comes from project.yml
@@ -92,9 +91,8 @@ ERROR: No "Developer ID Application" signing identity found in the keychain.
       xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \
         -configuration Release -derivedDataPath build build
 
-  As a fallback, .github/workflows/release.yml can publish an ad-hoc signed
-  DMG (Actions > Build and Release > Run workflow). Users then have to
-  right-click > Open on first launch.
+  Alternatively, .github/workflows/release.yml signs and notarizes using
+  repository environment secrets (Actions > Signed release > Run workflow).
 MSG
   exit 1
 fi
@@ -217,7 +215,7 @@ esac
 
 # Apple refuses to notarize anything carrying the debugger-attach entitlement.
 # Xcode injects it unless CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO, even though
-# Todoiste.entitlements is an empty dict. Catch it here rather than after a
+# the app's source entitlements only request microphone access. Catch it before a
 # round trip to the notary service.
 if codesign -d --entitlements - --xml "$APP" 2>/dev/null | grep -q 'get-task-allow'; then
   cat >&2 <<'MSG'
@@ -297,7 +295,7 @@ step "Publishing $TAG"
 git tag -a "$TAG" -m "Todoiste $TAG"
 git push origin "$TAG"
 
-# release.yml is workflow_dispatch-only, so the tag push does not trigger a
-# competing ad-hoc build. This notarized DMG is the only asset.
+# Actions uses dispatch/reusable calls, not tag pushes. It will see this public
+# release on its next Store check and skip it.
 gh release create "$TAG" "$DMG" --title "$TAG" --generate-notes
 gh release view "$TAG" --json url --jq '.url' | sed 's/^/  Published: /'

@@ -1,0 +1,10 @@
+{
+  "version": "209",
+  "commit": "b74f6a430a8b07b4f8b527fbaf3dbeebab3a2bb8",
+  "todoiste_version": "1.2.1",
+  "todoiste_build": "5",
+  "sha256": {
+    "mousetrap.js": "8e1622b52b2eb95993345fdbd12a94a59f605528a4657da93b2e61b4bae0f41f",
+    "todoist-shortcuts.js": "7400106d539458ca0d364b965e7d0e60855dad1e688acc18414d979d5b06994a"
+  }
+}

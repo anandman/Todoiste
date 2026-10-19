@@ -16,10 +16,8 @@ Download the latest `Todoiste.dmg` from
 [Releases](https://github.com/anandman/Todoiste/releases), open it, and drag
 Todoiste to Applications.
 
-The build is signed ad-hoc, not with a Developer ID, so macOS will refuse to
-open it the first time. Right-click the app and choose **Open**, or go to
-System Settings → Privacy & Security and click **Open Anyway**. After that it
-launches normally.
+Releases are signed with a Developer ID, notarized by Apple, and include a
+stapled notarization ticket. Both Apple Silicon and Intel Macs are supported.
 
 To build and install from source instead:
 
@@ -92,15 +90,40 @@ See the full shortcut reference at [mgsloan/todoist-shortcuts](https://github.co
 
 ## Keeping Up with Upstream
 
-The JS files in `Todoiste/Resources/` are vendored from [mgsloan/todoist-shortcuts](https://github.com/mgsloan/todoist-shortcuts). To pull the latest versions:
+The JS files in `Todoiste/Resources/` are vendored verbatim from [mgsloan/todoist-shortcuts](https://github.com/mgsloan/todoist-shortcuts). To prepare the version published in the Chrome Web Store:
 
 ```bash
 ./scripts/update-shortcuts.sh
 ```
 
-Then review the diff (`git diff Todoiste/Resources/`) and rebuild.
+This pins the matching upstream tag to a commit, checks JavaScript syntax and
+native integration, updates `upstream.json`, and bumps Todoiste's patch and build
+numbers. Review the diff and rebuild. Native-only releases must keep the two
+Todoiste version fields in `upstream.json` in sync with `project.yml`.
 
-The included [GitHub Action](.github/workflows/check-upstream.yml) will check for upstream changes every Monday and open a PR automatically.
+The [Store monitor](.github/workflows/check-upstream.yml) runs every six hours.
+When the Store publishes a newer version with a matching upstream tag and
+manifest, it prepares the update and runs the [signed release workflow](.github/workflows/release.yml).
+After a universal build, startup smoke test, signature/resource checks, Apple
+notarization, stapling, and Gatekeeper verification, it commits the update and
+publishes the verified DMG automatically. It never replaces a public release.
+Missing tags, ambiguous Store data, changed options/help integration, and failed
+checks stop publication; failed runs can be retried without another version bump.
+The Store listing is polled directly; its HTML can change, in which case the
+monitor fails until its parser is reviewed. Authenticated Todoist interactions
+still need a manual smoke test when integration behavior changes.
+
+Signing secrets belong to this repository's `release` environment, restricted to
+`main`: `DEVELOPER_ID_P12_BASE64`, `DEVELOPER_ID_P12_PASSWORD`,
+`NOTARY_API_KEY_BASE64`, `NOTARY_API_KEY_ID`, and `NOTARY_API_ISSUER_ID`.
+They are imported into a temporary runner keychain and removed after the build.
+`STORE_RELEASES_ENABLED=true` enables scheduled publication; set it to `false`
+to pause the monitor. No personal access token is required.
+
+For an unpublished signed/notarized validation build, run **Signed release** in
+Actions with `publish=false` (the default). Its verified DMG is retained as an
+Actions artifact for seven days. `publish=true` publishes only a pending release.
+The local signed/notarized flow remains available via `./scripts/release.sh`.
 
 ## Credits
 

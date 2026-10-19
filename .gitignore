@@ -33,3 +33,6 @@ HANDOFF.md
 
 ## Agent/dev docs (local only — synced out-of-band, never via this repo)
 docs/
+
+## Python release-gate tests
+__pycache__/
