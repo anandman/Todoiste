@@ -1,10 +1,10 @@
 {
-  "version": "209",
-  "commit": "b74f6a430a8b07b4f8b527fbaf3dbeebab3a2bb8",
-  "todoiste_version": "1.2.1",
-  "todoiste_build": "5",
+  "version": "210",
+  "commit": "6d337edf693eedbd36ec7ed115dd1b7f08903135",
+  "todoiste_version": "1.2.2",
+  "todoiste_build": "6",
   "sha256": {
     "mousetrap.js": "8e1622b52b2eb95993345fdbd12a94a59f605528a4657da93b2e61b4bae0f41f",
-    "todoist-shortcuts.js": "7400106d539458ca0d364b965e7d0e60855dad1e688acc18414d979d5b06994a"
+    "todoist-shortcuts.js": "350a6c0f86c28a38242f23bc641f730847b68df31ed4ec04e7166c9e3bffeb1d"
   }
 }
