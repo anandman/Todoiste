@@ -165,15 +165,32 @@ def is_published(release):
     return True
 
 
+def github_api(endpoint, method='GET', payload=None):
+    args = ['gh', 'api', '--method', method, endpoint]
+    if payload is not None:
+        args += ['--input', '-']
+    result = subprocess.run(args, input=json.dumps(payload) if payload is not None else None,
+                            capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError('GitHub release API failed: ' + result.stderr)
+    return json.loads(result.stdout) if result.stdout.strip() else None
+
+
 def release_info(tag):
     repo = os.environ.get('GITHUB_REPOSITORY', 'anandman/Todoiste')
-    # gh also sees drafts, unlike unauthenticated REST requests.
-    result = subprocess.run(['gh', 'api', f'repos/{repo}/releases/tags/{tag}'], capture_output=True, text=True)
+    # The by-tag endpoint returns only published releases. List pages to find
+    # drafts as well, and never guess if an earlier retry created duplicates.
+    result = subprocess.run(['gh', 'api', f'repos/{repo}/releases?per_page=100',
+                             '--paginate', '--slurp'], capture_output=True, text=True)
     if result.returncode:
-        if 'HTTP 404' in result.stderr:
-            return None
-        raise RuntimeError('Could not inspect GitHub release: ' + result.stderr)
-    return json.loads(result.stdout)
+        raise RuntimeError('Could not inspect GitHub releases: ' + result.stderr)
+    matches = [r for page in json.loads(result.stdout) for r in page if r['tag_name'] == tag]
+    published = [r for r in matches if not r['draft']]
+    if len(published) == 1:
+        return published[0]
+    if len(published) > 1 or len(matches) > 1:
+        raise ValueError(f'Multiple releases for {tag}; review draft IDs: {[r["id"] for r in matches]}')
+    return matches[0] if matches else None
 
 
 def publish(root=ROOT):
@@ -204,22 +221,39 @@ def publish(root=ROOT):
     tagged = subprocess.run(['git', 'rev-parse', '--verify', f'refs/tags/{tag}^{{commit}}'], cwd=root, capture_output=True, text=True)
     if tagged.returncode == 0:
         if tagged.stdout.strip() != head:
-            raise ValueError('Pending release tag points to different source; review manually')
+            # A publisher/workflow fix can advance main after the tag was pushed.
+            # Preserve that tag, but require the actual app/build inputs to match.
+            same_inputs = subprocess.run(['git', 'diff', '--quiet', f'refs/tags/{tag}',
+                'HEAD', '--', 'Todoiste', 'project.yml', 'upstream.json'], cwd=root)
+            if same_inputs.returncode:
+                raise ValueError('Pending release tag points to different app source; review manually')
     else:
         run('git', 'tag', '-a', tag, '-m', f'Todoiste {tag}')
         run('git', 'push', 'origin', tag)
     dmg = root / 'build/Build/Products/Release/Todoiste.dmg'
-    if existing:
-        # Only drafts may be repaired; a public asset is never clobbered.
-        run('gh', 'release', 'upload', tag, str(dmg), '--clobber')
-    else:
-        run('gh', 'release', 'create', tag, str(dmg), '--verify-tag', '--draft', '--title', tag, '--generate-notes')
-    draft = release_info(tag)
-    actual = next(a for a in draft['assets'] if a['name'] == 'Todoiste.dmg')
-    if actual['digest'] != 'sha256:' + hashlib.sha256(dmg.read_bytes()).hexdigest():
+    repo = os.environ.get('GITHUB_REPOSITORY', 'anandman/Todoiste')
+    draft = existing or github_api(f'repos/{repo}/releases', 'POST', {
+        'tag_name': tag, 'name': tag, 'draft': True, 'generate_release_notes': True})
+    release_id = draft['id']
+    if draft['tag_name'] != tag or not draft['draft'] or draft.get('prerelease'):
+        raise ValueError('Expected a non-prerelease draft before uploading')
+    # Address the exact draft ID throughout. Tag lookup cannot identify drafts.
+    for asset in draft['assets']:
+        if asset['name'] == 'Todoiste.dmg':
+            github_api(f'repos/{repo}/releases/assets/{asset["id"]}', 'DELETE')
+    upload = subprocess.run(['gh', 'api', '--method', 'POST',
+        f'https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name=Todoiste.dmg',
+        '-H', 'Content-Type: application/octet-stream', '--input', str(dmg)],
+        capture_output=True, text=True)
+    if upload.returncode:
+        raise RuntimeError('Release asset upload failed: ' + upload.stderr)
+    draft = github_api(f'repos/{repo}/releases/{release_id}')
+    assets = [a for a in draft['assets'] if a['name'] == 'Todoiste.dmg']
+    expected_digest = 'sha256:' + hashlib.sha256(dmg.read_bytes()).hexdigest()
+    if len(assets) != 1 or assets[0].get('digest') != expected_digest:
         raise ValueError('Uploaded asset digest does not match the verified local DMG')
-    run('gh', 'release', 'edit', tag, '--draft=false', '--latest')
-    if not is_published(release_info(tag)):
+    github_api(f'repos/{repo}/releases/{release_id}', 'PATCH', {'draft': False, 'make_latest': 'true'})
+    if not is_published(github_api(f'repos/{repo}/releases/{release_id}')):
         raise ValueError('Release did not become public')
 
 

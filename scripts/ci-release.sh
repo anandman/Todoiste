@@ -87,8 +87,8 @@ if ! python3 -c 'import json; assert json.load(open("build/notarization.json"))[
   xcrun notarytool log "$ID" "${NOTARY_ARGS[@]}" || true
   exit 1
 fi
-xcrun stapler staple "$DMG"
-xcrun stapler validate "$DMG"
+./scripts/retry-command.sh xcrun stapler staple "$DMG"
+./scripts/retry-command.sh xcrun stapler validate "$DMG"
 hdiutil attach "$DMG" -nobrowse -quiet -mountpoint build/verify-mnt
 spctl --assess --type execute --verbose=2 build/verify-mnt/Todoiste.app
 hdiutil detach build/verify-mnt -quiet

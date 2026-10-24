@@ -9,26 +9,45 @@ import unittest
 from unittest.mock import patch
 from test_store_release import gate
 
-FAKE_GH = '''#!/usr/bin/env python3
+FAKE_GH = r'''#!/usr/bin/env python3
 import hashlib,json,os,sys
 from pathlib import Path
 p=Path(os.environ['FAKE_RELEASE'])
 a=sys.argv[1:]
 state=json.loads(p.read_text()) if p.exists() else None
-if a[0]=='api':
-    if state is None:
+method=a[a.index('--method')+1] if '--method' in a else 'GET'
+endpoint=next(x for x in a[1:] if x.startswith(('repos/','https://')))
+if '/releases/tags/' in endpoint:
+    # GitHub's tag endpoint excludes drafts even for an owner.
+    if state is None or state['draft']:
         sys.stderr.write('HTTP 404');sys.exit(1)
     print(json.dumps(state));sys.exit()
-assert a[:2] in [['release','create'],['release','upload'],['release','edit']]
-if a[1] in ['create','upload']:
-    dmg=Path(a[3])
-    assert state is None or state['draft'], 'Never replace public assets'
-    digest='0'*64 if os.environ.get('BAD_DIGEST') else hashlib.sha256(dmg.read_bytes()).hexdigest()
-    state={'draft':True,'prerelease':False,'assets':[{'name':'Todoiste.dmg','size':dmg.stat().st_size,'digest':'sha256:'+digest}]}
+if endpoint.endswith('/releases?per_page=100'):
+    pages=[[state] if state else []]
+    if os.environ.get('DUPLICATE_DRAFT') and state:
+        pages.append([dict(state,id=124)])
+    print(json.dumps(pages));sys.exit()
+if method=='POST' and endpoint.endswith('/releases'):
+    assert state is None, 'Never create a duplicate draft'
+    data=json.load(sys.stdin)
+    state=dict(data,id=123,prerelease=False,assets=[])
+elif method=='DELETE' and '/releases/assets/' in endpoint:
+    assert state['draft'], 'Never replace public assets'
+    state['assets']=[]
+elif method=='POST' and endpoint.startswith('https://uploads.github.com/'):
+    assert '/releases/123/assets?' in endpoint and state['draft']
+    data=Path(a[a.index('--input')+1]).read_bytes()
+    digest='0'*64 if os.environ.get('BAD_DIGEST') else hashlib.sha256(data).hexdigest()
+    asset={'id':456,'name':'Todoiste.dmg','size':len(data),'digest':'sha256:'+digest}
+    state['assets']=[asset]
+    p.write_text(json.dumps(state));print(json.dumps(asset));sys.exit()
+elif method=='PATCH' and endpoint.endswith('/releases/123'):
+    state.update(json.load(sys.stdin))
+elif method=='GET' and endpoint.endswith('/releases/123'):
+    print(json.dumps(state));sys.exit()
 else:
-    assert '--draft=false' in a
-    state['draft']=False
-p.write_text(json.dumps(state))
+    raise AssertionError('Unexpected GitHub call: '+str(a))
+p.write_text(json.dumps(state));print(json.dumps(state))
 '''
 
 class PublicationTests(unittest.TestCase):
@@ -68,6 +87,45 @@ class PublicationTests(unittest.TestCase):
 
     def git(self, *args):
         return subprocess.check_output(['git',*args],cwd=self.root,stderr=subprocess.DEVNULL,text=True).strip()
+
+    def test_draft_lookup_uses_list_when_tag_endpoint_returns_404(self):
+        draft = {'id':123,'tag_name':'v1.2.2','draft':True,'prerelease':False,'assets':[]}
+        self.state.write_text(json.dumps(draft))
+        self.assertEqual(draft, gate.release_info('v1.2.2'))
+
+    def test_multiple_pending_drafts_stop_before_upload_or_publication(self):
+        self.state.write_text(json.dumps({'id':123,'tag_name':'v1.2.2','draft':True,'assets':[]}))
+        before = self.state.read_bytes()
+        with patch.dict(os.environ, {'DUPLICATE_DRAFT':'1'}), self.assertRaises(ValueError):
+            gate.publish(self.root)
+        self.assertEqual(before, self.state.read_bytes())
+        self.assertEqual('',self.git('tag'))
+
+    def test_workflow_fix_after_pending_tag_does_not_require_retagging(self):
+        self.git('tag','v1.2.2')
+        tagged = self.git('rev-parse','HEAD')
+        (self.root / 'workflow.yml').write_text('publication fix')
+        self.git('add','workflow.yml')
+        self.git('commit','-m','Fix publisher')
+        self.git('push','origin','main')
+        os.environ['GITHUB_SHA'] = self.git('rev-parse','HEAD')
+        gate.publish(self.root)
+        self.assertEqual(tagged,self.git('rev-parse','v1.2.2^{commit}'))
+        self.assertFalse(json.loads(self.state.read_text())['draft'])
+
+    def test_changed_app_source_cannot_reuse_pending_tag(self):
+        (self.root / 'Todoiste/App.swift').write_text('old source')
+        self.git('add','Todoiste/App.swift')
+        self.git('commit','-m','App')
+        self.git('tag','v1.2.2')
+        (self.root / 'Todoiste/App.swift').write_text('different source')
+        self.git('add','Todoiste/App.swift')
+        self.git('commit','-m','Change app')
+        self.git('push','origin','main')
+        os.environ['GITHUB_SHA'] = self.git('rev-parse','HEAD')
+        with self.assertRaises(ValueError):
+            gate.publish(self.root)
+        self.assertFalse(self.state.exists())
 
     def test_completed_publication_never_replaces_asset(self):
         gate.publish(self.root)
