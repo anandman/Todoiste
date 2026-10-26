@@ -63,9 +63,9 @@ class PublicationTests(unittest.TestCase):
         (self.root / 'upstream.json').write_text(json.dumps({'version':'210','todoiste_version':'1.2.2'}))
         (self.root / '.gitignore').write_text('build/\n')
         (self.root / 'project.yml').write_text('original project')
-        resources = self.root / 'Todoiste/Resources'
+        resources = self.root / gate.RESOURCE_DIR
         resources.mkdir(parents=True)
-        for name in gate.FILES:
+        for name in ['manifest.json', 'mousetrap.js', 'todoist-shortcuts.js', 'options-page.html']:
             (resources / name).write_text('original script')
         self.git('add', '.')
         self.git('commit', '-m', 'Checked source')
@@ -157,10 +157,19 @@ class PublicationTests(unittest.TestCase):
 
     def test_changed_update_is_committed_and_tagged_only_at_publication(self):
         (self.root / 'project.yml').write_text('updated project')
+        asset = self.root / gate.RESOURCE_DIR / 'nested/new-option.js'
+        asset.parent.mkdir()
+        asset.write_text('new source asset')
         gate.publish(self.root)
         self.assertEqual(self.git('rev-parse','HEAD'), self.git('rev-parse','v1.2.2^{commit}'))
         self.assertEqual(self.git('rev-parse','HEAD'), self.git('rev-parse','origin/main'))
         self.assertEqual('',self.git('status','--porcelain'))
+
+    def test_unexpected_untracked_source_cannot_be_published(self):
+        (self.root / 'Todoiste/unreviewed.swift').write_text('unexpected source')
+        with self.assertRaises(ValueError):
+            gate.publish(self.root)
+        self.assertFalse(self.state.exists())
 
 if __name__ == '__main__':
     unittest.main()

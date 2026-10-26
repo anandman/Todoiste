@@ -61,9 +61,22 @@ app = Path('build/Build/Products/Release/Todoiste.app')
 info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
 assert info['CFBundleShortVersionString'] == meta['todoiste_version']
 assert str(info['CFBundleVersion']) == meta['todoiste_build']
-for name in ['mousetrap.js', 'todoist-shortcuts.js', 'bootstrap.js']:
+import hashlib
+source = Path('Todoiste/Resources/Shortcuts')
+bundled = app / 'Contents/Resources/Shortcuts'
+assert {p.relative_to(source).as_posix() for p in source.rglob('*') if p.is_file()} == set(meta['sha256'])
+assert {p.relative_to(bundled).as_posix() for p in bundled.rglob('*') if p.is_file()} == set(meta['sha256'])
+assert not any(p.is_symlink() for p in source.rglob('*'))
+assert not any(p.is_symlink() for p in bundled.rglob('*'))
+for name, digest in meta['sha256'].items():
+    assert hashlib.sha256((source / name).read_bytes()).hexdigest() == digest, name
+    assert (bundled / name).read_bytes() == (source / name).read_bytes(), name
+for name in ['bootstrap.js', 'settings-storage-adapter.js']:
     assert (app / 'Contents/Resources' / name).read_bytes() == (Path('Todoiste/Resources') / name).read_bytes(), name
 PY
+
+# Exercise the generic storage bridge and exact upstream options page in WKWebView.
+./scripts/test-settings-host.sh "$PWD/$APP/Contents/Resources/Shortcuts" "$PWD/$APP/Contents/Resources/settings-storage-adapter.js"
 
 # Check startup without accessing a user's Todoist account. Hosted runners have
 # no saved session; this is a launch smoke test, not an authenticated UI test.

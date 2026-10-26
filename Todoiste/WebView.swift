@@ -4,7 +4,6 @@ import UserNotifications
 import WebKit
 
 extension Notification.Name {
-    static let reloadWebView = Notification.Name("reloadWebView")
     static let openSettings = Notification.Name("openSettings")
     static let openTodoistWebSettings = Notification.Name("openTodoistWebSettings")
 }
@@ -43,10 +42,10 @@ struct TodoistWebView: NSViewRepresentable {
 
     static func injectScripts(into controller: WKUserContentController) {
         injectNotificationBridge(into: controller)
-        injectFile(named: "mousetrap", into: controller)
+        injectFile(named: "mousetrap", upstream: true, into: controller)
         injectOptions(into: controller)
         injectFile(named: "bootstrap", into: controller)
-        injectFile(named: "todoist-shortcuts", into: controller)
+        injectFile(named: "todoist-shortcuts", upstream: true, into: controller)
     }
 
     // Bridge web notifications to native notifications because some WKWebView
@@ -94,8 +93,8 @@ struct TodoistWebView: NSViewRepresentable {
         ))
     }
 
-    private static func injectFile(named name: String, into controller: WKUserContentController) {
-        guard let url = Bundle.main.url(forResource: name, withExtension: "js"),
+    private static func injectFile(named name: String, upstream: Bool = false, into controller: WKUserContentController) {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "js", subdirectory: upstream ? "Shortcuts" : nil),
               let source = try? String(contentsOf: url, encoding: .utf8) else {
             print("[Todoiste] Failed to load \(name).js from bundle")
             return
@@ -111,30 +110,16 @@ struct TodoistWebView: NSViewRepresentable {
     // data-todoist-shortcuts-options attribute on <body>. Also sets the
     // options URL to a custom scheme so the help modal link opens Settings.
     static func injectOptions(into controller: WKUserContentController) {
-        let mouseBehavior = UserDefaults.standard.string(forKey: "mouse-behavior") ?? "focus-follows-mouse"
-        let cursorMovement = UserDefaults.standard.string(forKey: "cursor-movement") ?? "follows-task-within-section"
-        let opts: [String: String] = [
-            "mouse-behavior": mouseBehavior,
-            "cursor-movement": cursorMovement,
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: opts),
-              let json = String(data: data, encoding: .utf8) else { return }
-
-        // Escape for embedding as a JS string literal
-        let escaped = json
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-
-        let source = """
-        (function() {
-          function apply() {
-            if (!document.body) { setTimeout(apply, 50); return; }
-            document.body.setAttribute('data-todoist-shortcuts-options', "\(escaped)");
-            document.body.setAttribute('data-todoist-shortcuts-options-url', 'todoiste://settings');
-          }
-          apply();
-        })();
-        """
+        let source: String
+        do {
+            let optionsJSON = try ShortcutSettingsStore().optionsJSON()
+            source = try ShortcutSettingsStore.injectionSource(optionsJSON: optionsJSON)
+            ShortcutSettingsReloadState.shared.markApplied(optionsJSON: optionsJSON)
+        } catch {
+            print("[Todoiste] Unable to read extension settings; using upstream defaults: \(error.localizedDescription)")
+            guard let fallback = try? ShortcutSettingsStore.injectionSource(optionsJSON: "{}") else { return }
+            source = fallback
+        }
         controller.addUserScript(WKUserScript(
             source: source,
             injectionTime: .atDocumentEnd,

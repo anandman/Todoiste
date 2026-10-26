@@ -198,6 +198,25 @@ xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \
 APP="build/Build/Products/Release/Todoiste.app"
 [ -d "$APP" ] || die "Build did not produce $APP"
 
+step "Checking extension settings contract"
+python3 - <<'PYCONTRACT'
+import importlib.util, json
+from pathlib import Path
+root = Path.cwd()
+spec = importlib.util.spec_from_file_location('store_release', root / 'scripts/store-release.py')
+gate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gate)
+metadata = json.loads((root / 'upstream.json').read_text())
+assets = gate.local_assets(root, metadata['sha256'])
+gate.validate_integration(root, assets)
+assert json.loads(assets['manifest.json'])['version'] == metadata['version']
+bundled = root / 'build/Build/Products/Release/Todoiste.app/Contents/Resources/Shortcuts'
+assert {p.relative_to(bundled).as_posix() for p in bundled.rglob('*') if p.is_file()} == set(assets)
+for name, data in assets.items():
+    assert (bundled / name).read_bytes() == data, name
+PYCONTRACT
+./scripts/test-settings-host.sh "$PWD/$APP/Contents/Resources/Shortcuts" "$PWD/$APP/Contents/Resources/settings-storage-adapter.js"
+
 # ---------------------------------------------------------------- verify
 
 step "Verifying signature"

@@ -14,6 +14,7 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
 @main
 struct TodoisteApp: App {
     private let notificationDelegate = NotificationDelegate()
+    private let settingsOnly = CommandLine.arguments.contains("--settings-only")
 
     init() {
         UNUserNotificationCenter.current().delegate = notificationDelegate
@@ -21,10 +22,14 @@ struct TodoisteApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .frame(minWidth: 800, minHeight: 600)
+            if settingsOnly {
+                SettingsView()
+            } else {
+                ContentView()
+                    .frame(minWidth: 800, minHeight: 600)
+            }
         }
-        .defaultSize(width: 1200, height: 800)
+        .defaultSize(width: settingsOnly ? 780 : 1200, height: settingsOnly ? 720 : 800)
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .toolbar) {

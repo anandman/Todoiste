@@ -14,11 +14,16 @@ targets:
     platform: macOS
     sources:
       - path: Todoiste
+        excludes:
+          - Resources/Shortcuts
+      - path: Todoiste/Resources/Shortcuts
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.todoiste.app
-        MARKETING_VERSION: "1.2.2"
-        CURRENT_PROJECT_VERSION: "6"
+        MARKETING_VERSION: "1.2.3"
+        CURRENT_PROJECT_VERSION: "7"
         INFOPLIST_KEY_CFBundleDisplayName: Todoiste
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Todoiste uses your microphone for Todoist voice features like Ramble.
@@ -26,5 +31,3 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Todoiste/Todoiste.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "5.9"
-    resourceFiles:
-      - Todoiste/Resources/**/*.js

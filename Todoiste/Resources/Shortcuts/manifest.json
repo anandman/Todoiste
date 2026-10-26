@@ -1,0 +1,48 @@
+{
+  "name": "Todoist Shortcuts (GMail / vim inspired)",
+  "short_name": "Todoist Keys",
+  "author": "Michael Sloan",
+  "description": "Adds a comprehensive suite of keyboard shortcuts to Todoist. More info: https://github.com/mgsloan/todoist-shortcuts",
+  "version": "210",
+  "homepage_url": "https://github.com/mgsloan/todoist-shortcuts",
+  "content_scripts": [
+    {
+      "matches": ["https://todoist.com/app*", "https://*.todoist.com/app*"],
+      "js": ["common.js", "inject.js"],
+      "all_frames": true
+    }
+  ],
+  "permissions": ["storage"],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "mousetrap.js",
+        "todoist-shortcuts.js",
+        "options-page.html"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "icons": {
+    "128": "icon128.png"
+  },
+  "action": {
+    "default_icon": {
+      "128": "icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options-page.html",
+    "open_in_tab": true
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "{2ff71f49-5a35-4396-89e3-7913a0d12247}",
+      "strict_min_version": "109.0"
+    }
+  },
+  "content_security_policy": {
+    "script-src": "'self'"
+  },
+  "manifest_version": 3
+}
