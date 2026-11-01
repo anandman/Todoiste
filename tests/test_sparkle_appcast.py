@@ -38,6 +38,22 @@ class AppcastTests(unittest.TestCase):
     def test_accepts_feed_and_archive_signed_by_embedded_public_key(self):
         self.verify()
 
+    def test_fixture_signer_uses_selected_openssl_when_path_tool_is_incompatible(self):
+        binary = self.helper.openssl()
+        binaries = self.directory / 'incompatible-bin'
+        binaries.mkdir()
+        stub = binaries / 'openssl'
+        stub.write_text('#!/bin/sh\nif [ "$1" = version ]; then echo "LibreSSL 3.3.6"; exit 0; fi\necho "unsupported signing command" >&2\nexit 1\n')
+        stub.chmod(0o755)
+        fixtures = self.directory / 'fixtures'
+        fixtures.mkdir()
+        with patch.dict(os.environ, {'PATH':str(binaries) + os.pathsep + os.environ['PATH'],
+                                     'SPARKLE_OPENSSL':binary}):
+            signer = TestSigner(fixtures)
+            message = fixtures / 'proof.bin'
+            message.write_bytes(b'runner fixture signing proof')
+            self.helper.verify_signature(message, signer.sign(message.read_bytes()), signer.public_key)
+
     def test_rejects_tampered_feed_even_when_xml_still_valid(self):
         self.feed.write_bytes(self.feed.read_bytes().replace(b'<title>Todoiste', b'<title>Attacker'))
         with self.assertRaises(ValueError):
