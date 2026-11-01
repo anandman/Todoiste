@@ -7,6 +7,7 @@ cd "$(dirname "$0")/.."
 : "${NOTARY_KEY:?Missing notarization key path}"
 : "${NOTARY_KEY_ID:?Missing notarization key ID}"
 : "${NOTARY_ISSUER_ID:?Missing notarization issuer ID}"
+: "${SPARKLE_EDDSA_KEY_FILE:?Missing restricted Sparkle signing key path}"
 
 APP=build/Build/Products/Release/Todoiste.app
 DMG=build/Build/Products/Release/Todoiste.dmg
@@ -17,6 +18,7 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+python3 scripts/sparkle_appcast.py check-configuration
 xcodegen generate
 xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \
   -configuration Release -destination 'generic/platform=macOS' \
@@ -28,6 +30,7 @@ xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \
     tail -100 build/xcodebuild.log
     exit 1
   }
+./scripts/sign-sparkle.sh "$APP" "$SIGNING_IDENTITY" UX8BPNLPX5 "$SIGNING_KEYCHAIN"
 codesign --verify --deep --strict --verbose=2 "$APP"
 test -s "$APP/Contents/_CodeSignature/CodeResources"
 ARCHS_BUILT=$(lipo -archs "$APP/Contents/MacOS/Todoiste")
@@ -77,10 +80,11 @@ PY
 
 # Exercise the generic storage bridge and exact upstream options page in WKWebView.
 ./scripts/test-settings-host.sh "$PWD/$APP/Contents/Resources/Shortcuts" "$PWD/$APP/Contents/Resources/settings-storage-adapter.js"
+./scripts/test-updater.sh
 
 # Check startup without accessing a user's Todoist account. Hosted runners have
 # no saved session; this is a launch smoke test, not an authenticated UI test.
-"$APP/Contents/MacOS/Todoiste" > build/launch.log 2>&1 &
+"$APP/Contents/MacOS/Todoiste" --settings-only > build/launch.log 2>&1 &
 APP_PID=$!
 sleep 8
 kill -0 "$APP_PID"
@@ -105,5 +109,7 @@ fi
 hdiutil attach "$DMG" -nobrowse -quiet -mountpoint build/verify-mnt
 spctl --assess --type execute --verbose=2 build/verify-mnt/Todoiste.app
 hdiutil detach build/verify-mnt -quiet
+python3 scripts/sparkle_appcast.py generate
 shasum -a 256 "$DMG" > build/Todoiste.dmg.sha256
+shasum -a 256 "${DMG%/*}/appcast.xml" > build/appcast.xml.sha256
 cat build/Todoiste.dmg.sha256

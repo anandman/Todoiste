@@ -5,6 +5,11 @@ options:
     macOS: "14.0"
   xcodeVersion: "15.0"
 
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.1
+
 fileGroups:
   - Todoiste
 
@@ -12,6 +17,35 @@ targets:
   Todoiste:
     type: application
     platform: macOS
+    info:
+      path: build/Todoiste-Info.plist
+      properties:
+        SUFeedURL: https://github.com/anandman/Todoiste/releases/latest/download/appcast.xml
+        SUPublicEDKey: $(SPARKLE_PUBLIC_KEY)
+        SUEnableAutomaticChecks: true
+        SUAllowsAutomaticUpdates: false
+        SUAutomaticallyUpdate: false
+        SUEnableSystemProfiling: false
+        SUVerifyUpdateBeforeExtraction: true
+        SURequireSignedFeed: true
+        SUEnableInstallerLauncherService: false
+        SUEnableDownloaderService: false
+    dependencies:
+      - package: Sparkle
+    postBuildScripts:
+      - name: Prepare Sparkle for direct distribution
+        basedOnDependencyAnalysis: false
+        inputFiles:
+          - $(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)
+        script: |
+          set -euo pipefail
+          APP="$TARGET_BUILD_DIR/$WRAPPER_NAME"
+          "$SRCROOT/scripts/prepare-sparkle.sh" "$APP"
+          FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+          SIGN_IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:--}"
+          if [ "$CODE_SIGNING_ALLOWED" = "NO" ]; then SIGN_IDENTITY=-; fi
+          codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp=none \
+            --preserve-metadata=identifier,entitlements "$FRAMEWORK"
     sources:
       - path: Todoiste
         excludes:
@@ -22,8 +56,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.todoiste.app
-        MARKETING_VERSION: "1.2.4"
-        CURRENT_PROJECT_VERSION: "8"
+        MARKETING_VERSION: "1.2.5"
+        CURRENT_PROJECT_VERSION: "9"
+        SPARKLE_PUBLIC_KEY: "H7UC/1J3glhoZlamBfUgm+BMMCMzvH0rS/DOd426kQQ="
         INFOPLIST_KEY_CFBundleDisplayName: Todoiste
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Todoiste uses your microphone for Todoist voice features like Ramble.

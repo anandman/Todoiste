@@ -76,13 +76,14 @@ jobs:
         run: |
           python3 scripts/store-release.py prepare --expected-store-version "$STORE_VERSION" --output "$RUNNER_TEMP/prepared.txt"
           grep -Fx "source_digest=$EXPECTED_DIGEST" "$RUNNER_TEMP/prepared.txt"
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install build and public signature verification tools
+        run: brew install xcodegen openssl@3
       - name: Import signing credentials into a temporary keychain
         env:
           P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
           NOTARY_BASE64: ${{ secrets.NOTARY_API_KEY_BASE64 }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
           umask 077
           python3 - <<'PY'
@@ -90,6 +91,10 @@ jobs:
           from pathlib import Path
           for name, env in [('signing.p12', 'P12_BASE64'), ('notary.p8', 'NOTARY_BASE64')]:
               Path(os.environ['RUNNER_TEMP'], name).write_bytes(base64.b64decode(os.environ[env], validate=True))
+          sparkle_key = os.environ['SPARKLE_PRIVATE_KEY'].strip()
+          if len(base64.b64decode(sparkle_key, validate=True)) not in (32, 96):
+              raise SystemExit('Missing or invalid Sparkle signing key')
+          Path(os.environ['RUNNER_TEMP'], 'sparkle-eddsa.key').write_text(sparkle_key + '\n')
           PY
           KEYCHAIN="$RUNNER_TEMP/todoiste-signing.keychain-db"
           PASSWORD=$(openssl rand -hex 32)
@@ -108,12 +113,13 @@ jobs:
           NOTARY_KEY: ${{ runner.temp }}/notary.p8
           NOTARY_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+          SPARKLE_EDDSA_KEY_FILE: ${{ runner.temp }}/sparkle-eddsa.key
         run: ./scripts/ci-release.sh
       - name: Delete temporary signing material
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/todoiste-signing.keychain-db" || true
-          rm -f "$RUNNER_TEMP/signing.p12" "$RUNNER_TEMP/notary.p8"
+          rm -f "$RUNNER_TEMP/signing.p12" "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/sparkle-eddsa.key"
       - name: Save verified build and checks
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -121,13 +127,15 @@ jobs:
           path: |
             build/Build/Products/Release/Todoiste.dmg
             build/Todoiste.dmg.sha256
+            build/Build/Products/Release/appcast.xml
+            build/appcast.xml.sha256
             build/notarization.json
             build/signature.txt
             build/entitlements.txt
             build/launch.log
           if-no-files-found: error
           retention-days: 7
-      - name: Commit checked update and publish the verified DMG
+      - name: Commit checked update and publish verified DMG and signed appcast
         if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}

@@ -13,6 +13,10 @@ while (($#)); do
 done
 mkdir -p build
 xattr -w com.dropbox.ignored 1 build 2>/dev/null || true
+WORK_DIR=$(mktemp -d /private/tmp/todoiste-settings-preview.XXXXXX)
+trap 'rm -rf "$WORK_DIR"' EXIT
+DERIVED_DATA="$WORK_DIR/DerivedData"
+APP="$WORK_DIR/export/Todoiste Settings Preview.app"
 python3 - "$PREVIEW_SOURCE" <<'PY'
 import hashlib, json, sys
 from pathlib import Path, PurePosixPath
@@ -30,21 +34,20 @@ print('Verified combined preview source:', meta['commit'])
 PY
 xcodegen generate
 xcodebuild -project Todoiste.xcodeproj -scheme Todoiste -configuration Debug \
-  -destination 'platform=macOS' -derivedDataPath build/settings-preview-derived \
+  -destination 'platform=macOS' -derivedDataPath "$DERIVED_DATA" \
+  -clonedSourcePackagesDirPath "$PWD/build/SourcePackages" \
   PRODUCT_BUNDLE_IDENTIFIER=com.todoiste.settings-preview CODE_SIGNING_ALLOWED=NO \
   build > build/settings-preview-build.log 2>&1 || {
     tail -100 build/settings-preview-build.log
     exit 1
   }
-APP="$PWD/build/local-tests/Todoiste Settings Preview.app"
-python3 - "$PREVIEW_SOURCE" "$APP" <<'PY'
+python3 - "$PREVIEW_SOURCE" "$APP" "$DERIVED_DATA" <<'PY'
 import hashlib, json, plistlib, shutil, sys
 from pathlib import Path
-source, app = map(Path, sys.argv[1:])
-assert app.parent == Path.cwd() / 'build/local-tests'
-if app.exists(): shutil.rmtree(app)
+source, app, derived = map(Path, sys.argv[1:])
+assert not app.exists()
 app.parent.mkdir(parents=True, exist_ok=True)
-shutil.copytree('build/settings-preview-derived/Build/Products/Debug/Todoiste.app', app)
+shutil.copytree(derived / 'Build/Products/Debug/Todoiste.app', app, symlinks=True)
 vendor = app / 'Contents/Resources/Shortcuts'
 if vendor.exists(): shutil.rmtree(vendor)
 shutil.copytree(source / 'extension', vendor)
@@ -63,5 +66,21 @@ PY
 codesign --force --sign - --entitlements Todoiste/Todoiste.entitlements "$APP"
 codesign --verify --deep --strict "$APP"
 ./scripts/test-settings-host.sh "$APP/Contents/Resources/Shortcuts" "$APP/Contents/Resources/settings-storage-adapter.js"
-printf '\nLocal preview ready: %s\n' "$APP"
-if "$LAUNCH"; then open -n "$APP" --args --settings-only; fi
+mkdir -p build/local-tests
+DMG="$PWD/build/local-tests/Todoiste Settings Preview.dmg"
+hdiutil create -volname 'Todoiste Settings Preview' -srcfolder "$WORK_DIR/export" \
+  -ov -format UDZO "$DMG" >/dev/null
+printf '\nLocal preview ready: %s\nExisting preview apps are retained.\n' "$DMG"
+if "$LAUNCH"; then
+  hdiutil attach "$DMG" -nobrowse -readonly -plist > "$WORK_DIR/mount.plist"
+  MOUNT=$(python3 - "$WORK_DIR/mount.plist" <<'PY'
+import plistlib, sys
+from pathlib import Path
+mounts = [entry['mount-point'] for entry in plistlib.loads(Path(sys.argv[1]).read_bytes())['system-entities']
+          if 'mount-point' in entry and (Path(entry['mount-point']) / 'Todoiste Settings Preview.app').is_dir()]
+assert len(mounts) == 1
+print(mounts[0])
+PY
+)
+  open -n "$MOUNT/Todoiste Settings Preview.app" --args --settings-only
+fi
