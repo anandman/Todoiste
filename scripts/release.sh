@@ -36,6 +36,17 @@ DRY_RUN=false
 
 die() { printf '\nERROR: %s\n' "$1" >&2; exit 1; }
 step() { printf '\n==> %s\n' "$1"; }
+WORK_DIR=""
+MOUNT_POINT=""
+cleanup() {
+  local release_status=$?
+  if [ -n "$MOUNT_POINT" ] && mount | grep -Fq "$MOUNT_POINT"; then
+    hdiutil detach "$MOUNT_POINT" -quiet || true
+  fi
+  if [ -n "$WORK_DIR" ]; then rm -rf "$WORK_DIR"; fi
+  return "$release_status"
+}
+trap cleanup EXIT
 
 # ---------------------------------------------------------------- preflight
 
@@ -43,6 +54,7 @@ step "Preflight"
 
 command -v xcodegen >/dev/null || die "xcodegen not found. brew install xcodegen"
 command -v gh >/dev/null || die "gh not found. brew install gh"
+python3 scripts/sparkle_appcast.py check-configuration
 
 # Checked here because the publish step runs last: an unauthenticated gh would
 # leave the tag pushed with no release attached to it.
@@ -59,9 +71,8 @@ if [ -n "$(git status --porcelain)" ]; then
   die "Working tree is dirty. Commit or stash before releasing."
 fi
 
-if git rev-parse "$TAG" >/dev/null 2>&1; then
-  die "Tag $TAG already exists. Bump MARKETING_VERSION in project.yml first."
-fi
+# A previous upload may have left a pending tag/draft. The shared publisher
+# checks exact app inputs and refuses every public release before replacement.
 
 # A Developer ID Application identity is what makes notarization possible.
 # `|| true` matters: with `set -e` plus `pipefail`, grep finding nothing makes
@@ -172,20 +183,27 @@ echo "  signing:  test signature OK"
 # ---------------------------------------------------------------- build
 
 step "Building Release"
-xcodegen generate >/dev/null
-rm -rf build
+rm -rf build/Build build/Intermediates.noindex
 mkdir -p build
 # The repo lives in Dropbox and is built on more than one Mac. Without this,
 # ~100MB of DerivedData syncs between machines and Dropbox writes "conflicted
 # copy" files inside it when two builds overlap, which corrupts builds.
 xattr -w com.dropbox.ignored 1 build 2>/dev/null || true
+xcodegen generate >/dev/null
+# FileProvider can recreate FinderInfo on app/framework packages after it is
+# removed. Keep the signed app private and outside Dropbox through DMG creation.
+WORK_DIR=$(mktemp -d /tmp/todoiste-release.XXXXXX)
+WORK_DIR=$(cd "$WORK_DIR" && pwd -P)
+APP="$WORK_DIR/DerivedData/Build/Products/Release/Todoiste.app"
+MOUNT_POINT="$WORK_DIR/verify-mnt"
 # generic/platform=macOS matters: with no -destination, xcodebuild picks the
 # first arch-specific destination (arm64) and builds ONLY that, despite
 # ARCHS=arm64 x86_64. v1.1.1 shipped Apple-Silicon-only for exactly that reason.
 xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \
   -configuration Release \
   -destination 'generic/platform=macOS' \
-  -derivedDataPath build \
+  -derivedDataPath "$WORK_DIR/DerivedData" \
+  -clonedSourcePackagesDirPath "$REPO_ROOT/build/SourcePackages" \
   CODE_SIGN_STYLE=Manual \
   CODE_SIGN_IDENTITY="$IDENTITY" \
   DEVELOPMENT_TEAM="$TEAM_ID" \
@@ -195,12 +213,12 @@ xcodebuild -project Todoiste.xcodeproj -scheme Todoiste \
   build \
   | tail -3
 
-APP="build/Build/Products/Release/Todoiste.app"
 [ -d "$APP" ] || die "Build did not produce $APP"
+./scripts/sign-sparkle.sh "$APP" "$IDENTITY" "$TEAM_ID"
 
 step "Checking extension settings contract"
-python3 - <<'PYCONTRACT'
-import importlib.util, json
+python3 - "$APP" <<'PYCONTRACT'
+import importlib.util, json, sys
 from pathlib import Path
 root = Path.cwd()
 spec = importlib.util.spec_from_file_location('store_release', root / 'scripts/store-release.py')
@@ -210,12 +228,13 @@ metadata = json.loads((root / 'upstream.json').read_text())
 assets = gate.local_assets(root, metadata['sha256'])
 gate.validate_integration(root, assets)
 assert json.loads(assets['manifest.json'])['version'] == metadata['version']
-bundled = root / 'build/Build/Products/Release/Todoiste.app/Contents/Resources/Shortcuts'
+bundled = Path(sys.argv[1]) / 'Contents/Resources/Shortcuts'
 assert {p.relative_to(bundled).as_posix() for p in bundled.rglob('*') if p.is_file()} == set(assets)
 for name, data in assets.items():
     assert (bundled / name).read_bytes() == data, name
 PYCONTRACT
-./scripts/test-settings-host.sh "$PWD/$APP/Contents/Resources/Shortcuts" "$PWD/$APP/Contents/Resources/settings-storage-adapter.js"
+./scripts/test-settings-host.sh "$APP/Contents/Resources/Shortcuts" "$APP/Contents/Resources/settings-storage-adapter.js"
+./scripts/test-updater.sh "$APP"
 
 # ---------------------------------------------------------------- verify
 
@@ -258,11 +277,12 @@ echo "  entitlements: no get-task-allow"
 # ---------------------------------------------------------------- package
 
 step "Building DMG"
-STAGE="build/dmg"
+STAGE="$WORK_DIR/dmg"
 rm -rf "$STAGE"; mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 DMG="build/Build/Products/Release/Todoiste.dmg"
+mkdir -p "$(dirname "$DMG")"
 rm -f "$DMG"
 hdiutil create -volname Todoiste -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 codesign --sign "$IDENTITY" --timestamp "$DMG"
@@ -271,7 +291,7 @@ echo "  $DMG ($(du -h "$DMG" | cut -f1))"
 # ---------------------------------------------------------------- notarize
 
 step "Notarizing (this can take a few minutes)"
-SUBMIT_LOG=$(mktemp)
+SUBMIT_LOG=$(mktemp "$WORK_DIR/notarization.XXXXXX")
 set +e
 xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1 | tee "$SUBMIT_LOG"
 set -e
@@ -298,23 +318,25 @@ xcrun stapler validate "$DMG"
 
 # The real test: what Gatekeeper says about the app a user would drag out.
 step "Gatekeeper check"
-hdiutil attach "$DMG" -nobrowse -quiet -mountpoint build/verify-mnt
-spctl -a -t exec -vv build/verify-mnt/Todoiste.app 2>&1 | sed 's/^/  /'
-hdiutil detach build/verify-mnt -quiet
+hdiutil attach "$DMG" -nobrowse -quiet -mountpoint "$MOUNT_POINT"
+spctl -a -t exec -vv "$MOUNT_POINT/Todoiste.app" 2>&1 | sed 's/^/  /'
+hdiutil detach "$MOUNT_POINT" -quiet
+
+step "Generating and verifying signed Sparkle appcast"
+python3 scripts/sparkle_appcast.py generate --app "$APP" --dmg "$DMG"
+shasum -a 256 "$DMG" > build/Todoiste.dmg.sha256
+shasum -a 256 "${DMG%/*}/appcast.xml" > build/appcast.xml.sha256
 
 # ---------------------------------------------------------------- publish
 
 if [ "$DRY_RUN" = true ]; then
   step "Dry run — skipping tag and upload"
   echo "  Artifact ready: $DMG"
+  echo "  Signed feed: ${DMG%/*}/appcast.xml"
   exit 0
 fi
 
-step "Publishing $TAG"
-git tag -a "$TAG" -m "Todoiste $TAG"
-git push origin "$TAG"
-
-# Actions uses dispatch/reusable calls, not tag pushes. It will see this public
-# release on its next Store check and skip it.
-gh release create "$TAG" "$DMG" --title "$TAG" --generate-notes
+step "Publishing verified DMG and appcast for $TAG"
+# Share the exact draft-ID, digest and concurrent-main protections with CI.
+GITHUB_SHA="$(git rev-parse HEAD)" python3 scripts/store-release.py publish
 gh release view "$TAG" --json url --jq '.url' | sed 's/^/  Published: /'

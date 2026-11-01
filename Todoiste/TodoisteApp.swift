@@ -15,6 +15,7 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
 struct TodoisteApp: App {
     private let notificationDelegate = NotificationDelegate()
     private let settingsOnly = CommandLine.arguments.contains("--settings-only")
+    @StateObject private var updater = AppUpdater()
 
     init() {
         UNUserNotificationCenter.current().delegate = notificationDelegate
@@ -23,7 +24,7 @@ struct TodoisteApp: App {
     var body: some Scene {
         WindowGroup {
             if settingsOnly {
-                SettingsView()
+                SettingsView(updater: updater)
             } else {
                 ContentView()
                     .frame(minWidth: 800, minHeight: 600)
@@ -32,6 +33,10 @@ struct TodoisteApp: App {
         .defaultSize(width: settingsOnly ? 780 : 1200, height: settingsOnly ? 720 : 800)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…", action: updater.checkForUpdates)
+                    .disabled(!updater.canCheckForUpdates)
+            }
             CommandGroup(after: .toolbar) {
                 Button("Reload") {
                     NotificationCenter.default.post(name: .reloadWebView, object: nil)
@@ -41,7 +46,7 @@ struct TodoisteApp: App {
         }
 
         Settings {
-            SettingsView()
+            SettingsView(updater: updater)
         }
     }
 }

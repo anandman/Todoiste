@@ -1,9 +1,11 @@
 import SwiftUI
 
 struct SettingsView: View {
+    var updater: AppUpdater? = nil
     private enum SettingsTab: Hashable {
         case `extension`
         case todoist
+        case updates
     }
 
     @State private var selectedTab: SettingsTab = .extension
@@ -59,6 +61,12 @@ struct SettingsView: View {
             .padding()
             .tabItem { Label("Todoist", systemImage: "checklist") }
             .tag(SettingsTab.todoist)
+
+            if let updater {
+                UpdatesSettingsView(updater: updater)
+                    .tabItem { Label("Updates", systemImage: "arrow.down.circle") }
+                    .tag(SettingsTab.updates)
+            }
         }
         .frame(width: 780, height: 720)
         .background(SettingsWindowCloseObserver {

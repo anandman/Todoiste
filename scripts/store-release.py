@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare a pinned, Store-published shortcuts update; publish only verified DMGs.
+"""Prepare a pinned shortcuts update; publish a verified DMG and signed appcast.
 
 No third-party Python dependencies. HTTP data is bounded and all downloaded JS
 is checked before any source file is replaced. No upstream code is executed.
@@ -591,8 +591,16 @@ def prepare(root=ROOT, download=fetch, expected=None):
 def is_published(release):
     if release.get('draft'):
         return False
-    assets = [a for a in release.get('assets', []) if a['name'] == 'Todoiste.dmg']
-    if release.get('prerelease') or len(assets) != 1 or assets[0]['size'] <= 0 or not re.fullmatch(r'sha256:[a-f0-9]{64}', assets[0].get('digest') or ''):
+    # Before Sparkle shipped, releases legitimately contained only a DMG.
+    version = re.fullmatch(r'v(\d+)\.(\d+)\.(\d+)', release.get('tag_name', ''))
+    required = ['Todoiste.dmg']
+    if version and tuple(map(int, version.groups())) > (1, 2, 4):
+        required.append('appcast.xml')
+    incomplete = release.get('prerelease')
+    for name in required:
+        assets = [a for a in release.get('assets', []) if a['name'] == name]
+        incomplete = incomplete or len(assets) != 1 or assets[0]['size'] <= 0 or not re.fullmatch(r'sha256:[a-f0-9]{64}', assets[0].get('digest') or '')
+    if incomplete:
         raise ValueError('Existing public release is incomplete; refusing to replace it')
     return True
 
@@ -626,12 +634,20 @@ def release_info(tag):
 
 
 def publish(root=ROOT):
-    """Called only after the signed DMG has passed notarization and Gatekeeper."""
+    """Called after notarization, Gatekeeper and signed-feed verification."""
     metadata = json.loads((root / 'upstream.json').read_text())
     tag = 'v' + metadata['todoiste_version']
     existing = release_info(tag)
     if existing and is_published(existing):
         raise ValueError('Release already published; refusing to replace its artifact')
+    # Revalidate cryptographic signatures and versioned URLs immediately before
+    # touching Git or GitHub. Private signing material has already been removed.
+    subprocess.run([sys.executable, str(ROOT / 'scripts/sparkle_appcast.py'), 'verify',
+                    '--root', str(root)], cwd=root, check=True, capture_output=True)
+    directory = root / 'build/Build/Products/Release'
+    release_assets = [directory / 'Todoiste.dmg', directory / 'appcast.xml']
+    expected = {path.name: ('sha256:' + hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_size)
+                for path in release_assets}
     run = lambda *args: subprocess.run(args, cwd=root, check=True)
     # A concurrent human push must stop this run instead of being incorporated
     # into a tag whose source differs from the verified build.
@@ -645,9 +661,9 @@ def publish(root=ROOT):
                                     cwd=root, text=True).splitlines()
     if any(name not in allowed and not name.startswith(RESOURCE_DIR.as_posix() + '/') for name in dirty):
         raise ValueError('Unexpected source changes during build')
-    run('git', 'config', 'user.name', 'github-actions[bot]')
-    run('git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com')
     if dirty:
+        run('git', 'config', 'user.name', 'github-actions[bot]')
+        run('git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com')
         run('git', 'add', '--', *sorted(allowed), RESOURCE_DIR.as_posix())
         run('git', 'commit', '-m', f'Release {tag} with Store shortcuts {metadata["version"]}')
         run('git', 'push', 'origin', 'HEAD:main')
@@ -664,28 +680,33 @@ def publish(root=ROOT):
     else:
         run('git', 'tag', '-a', tag, '-m', f'Todoiste {tag}')
         run('git', 'push', 'origin', tag)
-    dmg = root / 'build/Build/Products/Release/Todoiste.dmg'
     repo = os.environ.get('GITHUB_REPOSITORY', 'anandman/Todoiste')
     draft = existing or github_api(f'repos/{repo}/releases', 'POST', {
         'tag_name': tag, 'name': tag, 'draft': True, 'generate_release_notes': True})
     release_id = draft['id']
-    if draft['tag_name'] != tag or not draft['draft'] or draft.get('prerelease'):
+    # Re-read after the build/Git work: a human may have published this draft
+    # since the initial lookup. Never delete assets based on stale draft state.
+    draft = github_api(f'repos/{repo}/releases/{release_id}')
+    if draft['id'] != release_id or draft['tag_name'] != tag or not draft['draft'] or draft.get('prerelease'):
         raise ValueError('Expected a non-prerelease draft before uploading')
     # Address the exact draft ID throughout. Tag lookup cannot identify drafts.
     for asset in draft['assets']:
-        if asset['name'] == 'Todoiste.dmg':
+        if asset['name'] in expected:
             github_api(f'repos/{repo}/releases/assets/{asset["id"]}', 'DELETE')
-    upload = subprocess.run(['gh', 'api', '--method', 'POST',
-        f'https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name=Todoiste.dmg',
-        '-H', 'Content-Type: application/octet-stream', '--input', str(dmg)],
-        capture_output=True, text=True)
-    if upload.returncode:
-        raise RuntimeError('Release asset upload failed: ' + upload.stderr)
+    for path in release_assets:
+        upload = subprocess.run(['gh', 'api', '--method', 'POST',
+            f'https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={quote(path.name)}',
+            '-H', 'Content-Type: application/octet-stream', '--input', str(path)],
+            capture_output=True, text=True)
+        if upload.returncode:
+            raise RuntimeError('Release asset upload failed: ' + upload.stderr)
     draft = github_api(f'repos/{repo}/releases/{release_id}')
-    assets = [a for a in draft['assets'] if a['name'] == 'Todoiste.dmg']
-    expected_digest = 'sha256:' + hashlib.sha256(dmg.read_bytes()).hexdigest()
-    if len(assets) != 1 or assets[0].get('digest') != expected_digest:
-        raise ValueError('Uploaded asset digest does not match the verified local DMG')
+    if draft['id'] != release_id or draft['tag_name'] != tag or not draft['draft'] or draft.get('prerelease'):
+        raise ValueError('Release draft changed during upload')
+    for name, (digest, size) in expected.items():
+        assets = [a for a in draft['assets'] if a['name'] == name]
+        if len(assets) != 1 or assets[0].get('digest') != digest or assets[0].get('size') != size:
+            raise ValueError(f'Uploaded {name} digest or size differs from the verified local asset')
     github_api(f'repos/{repo}/releases/{release_id}', 'PATCH', {'draft': False, 'make_latest': 'true'})
     if not is_published(github_api(f'repos/{repo}/releases/{release_id}')):
         raise ValueError('Release did not become public')

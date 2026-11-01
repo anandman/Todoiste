@@ -1,8 +1,8 @@
 {
   "version": "211",
   "commit": "38cb2c7b988d90d74e9d52c154d23ad1670ed3c6",
-  "todoiste_version": "1.2.4",
-  "todoiste_build": "8",
+  "todoiste_version": "1.2.5",
+  "todoiste_build": "9",
   "sha256": {
     "common.js": "8270c5d8b1fe258753bd4b58496e8a05faa02f447dbceff1b9e201f5f2e8ec57",
     "icon128.png": "42a97135a6af30747f6b7a6c3d40f2dec1a891c22214cc3783f9c49cddad2b33",
