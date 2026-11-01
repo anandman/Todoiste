@@ -1,17 +1,24 @@
 """Ephemeral test signing keys; never uses a developer's Sparkle Keychain."""
 import base64
+import importlib.util
 from pathlib import Path
 import subprocess
+
+SPEC = importlib.util.spec_from_file_location('sparkle_signature_tools',
+    Path(__file__).resolve().parents[1] / 'scripts/sparkle_appcast.py')
+SIGNATURE_TOOLS = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SIGNATURE_TOOLS)
 
 
 class TestSigner:
     def __init__(self, directory):
         self.directory = Path(directory)
         self.key = self.directory / 'test-only-ed25519.pem'
-        subprocess.run(['openssl', 'genpkey', '-algorithm', 'ED25519', '-out', str(self.key)],
+        self.openssl = SIGNATURE_TOOLS.openssl()
+        subprocess.run([self.openssl, 'genpkey', '-algorithm', 'ED25519', '-out', str(self.key)],
                        check=True, capture_output=True)
         self.key.chmod(0o600)
-        public = subprocess.check_output(['openssl', 'pkey', '-in', str(self.key),
+        public = subprocess.check_output([self.openssl, 'pkey', '-in', str(self.key),
                                           '-pubout', '-outform', 'DER'])
         self.public_key = base64.b64encode(public[-32:]).decode()
 
@@ -19,7 +26,7 @@ class TestSigner:
         message = self.directory / 'message'
         signature = self.directory / 'signature'
         message.write_bytes(content)
-        subprocess.run(['openssl', 'pkeyutl', '-sign', '-inkey', str(self.key),
+        subprocess.run([self.openssl, 'pkeyutl', '-sign', '-inkey', str(self.key),
                         '-rawin', '-in', str(message), '-out', str(signature)],
                        check=True, capture_output=True)
         return base64.b64encode(signature.read_bytes()).decode()
