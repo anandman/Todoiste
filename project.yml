@@ -56,8 +56,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.todoiste.app
-        MARKETING_VERSION: "1.2.5"
-        CURRENT_PROJECT_VERSION: "9"
+        MARKETING_VERSION: "1.2.6"
+        CURRENT_PROJECT_VERSION: "10"
         SPARKLE_PUBLIC_KEY: "H7UC/1J3glhoZlamBfUgm+BMMCMzvH0rS/DOd426kQQ="
         INFOPLIST_KEY_CFBundleDisplayName: Todoiste
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
