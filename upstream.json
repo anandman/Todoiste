@@ -1,17 +1,17 @@
 {
-  "version": "212",
-  "commit": "b1cf9bcbe4bee2b228342e89803b927771f91a64",
-  "todoiste_version": "1.2.6",
-  "todoiste_build": "10",
+  "version": "213",
+  "commit": "c4fab7f1d38e55e988e591b6ab0b584a368d4605",
+  "todoiste_version": "1.2.7",
+  "todoiste_build": "11",
   "sha256": {
     "common.js": "8270c5d8b1fe258753bd4b58496e8a05faa02f447dbceff1b9e201f5f2e8ec57",
     "icon128.png": "42a97135a6af30747f6b7a6c3d40f2dec1a891c22214cc3783f9c49cddad2b33",
     "inject.js": "7e07107f6c36d607da1a0c860ff8c78850a833bd6fda621fcec01d30ceee6512",
-    "manifest.json": "439c92a1fc16c87ec9f5bf0097d4f114f9459a4551157880129fa6b10588359c",
+    "manifest.json": "e8dc534493d306affae957e3034125565cabca007b758b238f50e6de1e55ae9f",
     "mousetrap.js": "8e1622b52b2eb95993345fdbd12a94a59f605528a4657da93b2e61b4bae0f41f",
     "options-page.css": "158ce8134b0730cb4d1b75c5e3bc340d8484cf70072fd0d8f9f6189c3b7248b2",
     "options-page.html": "a0c8d3da32a445f14ee06fd7929bb451208dee18c9024d42344c54a561db29dd",
     "options-page.js": "ea47ed84ee4b313d12716bf4d000934a53fb61f6ba0fe1a4c3b8ea545dc4c661",
-    "todoist-shortcuts.js": "f087b7795ca3d6665025763e536ce27efc290a51c90d5bb7110949de002a39c5"
+    "todoist-shortcuts.js": "1510f80016e8336fc30a342465111b29bf8c3800977d14898ac554167f46770a"
   }
 }

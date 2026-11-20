@@ -146,7 +146,7 @@
   // date behave the same whichever key was used, and leaves the keyboard
   // where the mouse would: back at the task list.
   const CLOSING_DATE_BINDINGS = SCHEDULE_DATE_BINDINGS.map(
-      (binding) => [binding[0], sequence([binding[1], closeContextMenus])]);
+      (binding) => [binding[0], () => scheduleAndClose(binding[1])]);
 
   // Scheduling keybindings (used when scheduler is open)
   const SCHEDULE_BINDINGS = [].concat(
@@ -600,6 +600,20 @@
               'button',
               matchingAttr('data-track', 'scheduler|date_shortcut_today'));
         });
+  }
+
+  async function scheduleAndClose(action) {
+    const queue = bulkCursorQueue;
+    await withBulkDialogChange(async () => {
+      await action();
+      await closeContextMenus();
+      // A date can close the scheduler before the cleanup above runs. Wait
+      // until both have finished before opening the next task's scheduler,
+      // otherwise that cleanup can close it too and keep advancing the walk.
+      if (queue && bulkCursorQueue === queue) {
+        await oneBulkStep();
+      }
+    });
   }
 
   // Click 'next week' in schedule. Only does anything if schedule is open.
@@ -1190,11 +1204,13 @@
 
   async function openMoreActionsMenu() {
     withUnique(document, 'header[aria-label^="Header:"]', all, (header) => {
-      // The one button in the header which opens a menu, rather than the
-      // three circles in its icon which this used to count.  Its label is
-      // translated, and the "Display" button beside it opens a dialog rather
-      // than a menu, so it doesn't match.
-      const button = getUnique(header, 'button[aria-haspopup=menu]');
+      // The actions group contains both the menu and the "Display" dialog
+      // button. The project icon also opens a menu, but lives with the title
+      // rather than these actions. Use that grouping to avoid translated
+      // labels and the project's customizable icon.
+      const button = getUnique(header, 'button[aria-haspopup=menu]',
+          (candidate) => Boolean(getFirst(
+              candidate.parentElement, 'button[aria-haspopup=dialog]')));
       if (!button) {
         // "Today" and "Upcoming" have no such menu.
         warn('This view has no "more actions" menu.');
@@ -1952,9 +1968,9 @@
     bulkTaskKey = null;
     visitedBulkTaskIds = new Set();
     bulkDialogSeenOpen = false;
-    bulkCursorQueue = {tail: Promise.resolve()};
+    bulkCursorQueue = {tail: Promise.resolve(), changingDialog: 0};
     updateKeymap();
-    await mode.open(cursor);
+    await withBulkDialogChange(() => mode.open(cursor));
   }
 
   async function exitBulk() {
@@ -1971,6 +1987,10 @@
   }
 
   async function oneBulkStep() {
+    await withBulkDialogChange(oneBulkStepImpl);
+  }
+
+  async function oneBulkStepImpl() {
     const mode = bulkMode;
     // Cleared first, so that closing the dialog below - and everything else
     // which happens before the next one is up - isn't taken for the user
@@ -1986,6 +2006,26 @@
     }
     setCursor(task, 'scroll');
     await mode.open(task);
+  }
+
+  // Ignore intermediate dialog mutations while closing or opening one. In
+  // particular, an outgoing dialog can still be present after its close was
+  // requested; seeing it again must not re-arm the walk. The queue belongs
+  // to this session, so a pending change cannot affect a later session.
+  async function withBulkDialogChange(action) {
+    const queue = bulkCursorQueue;
+    if (!queue) {
+      return await action();
+    }
+    queue.changingDialog++;
+    try {
+      return await action();
+    } finally {
+      queue.changingDialog--;
+      if (bulkCursorQueue === queue) {
+        handleBulkModeMutation();
+      }
+    }
   }
 
   // The task to deal with next, or null when the walk is over.
@@ -2019,7 +2059,7 @@
   // advances.  Closing a dialog from this script always clears
   // 'bulkDialogSeenOpen' first, so it never counts.
   function handleBulkModeMutation() {
-    if (!bulkMode) {
+    if (!bulkMode || bulkCursorQueue.changingDialog) {
       return;
     }
     if (bulkMode.isOpen()) {
@@ -2055,7 +2095,7 @@
     if (!mode || !queue) {
       return;
     }
-    const step = queue.tail.then(async () => {
+    const step = queue.tail.then(() => withBulkDialogChange(async () => {
       if (bulkCursorQueue !== queue) {
         return;
       }
@@ -2079,7 +2119,7 @@
       if (cursor) {
         await mode.open(cursor);
       }
-    });
+    }));
     // A failed move must not prevent later cursor keys from working.  The
     // caller still receives the failure from this step.
     queue.tail = step.catch(noop);
@@ -2201,7 +2241,7 @@
       return null;
     }
     bulkDialogSeenOpen = false;
-    await closeContextMenus();
+    await withBulkDialogChange(closeContextMenus);
     const cursor = getCursor();
     if (!cursor) {
       await exitBulk();
